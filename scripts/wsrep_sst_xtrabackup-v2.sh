@@ -34,6 +34,7 @@ ssystag=""
 XTRABACKUP_PID=""
 SST_PORT=""
 REMOTEIP=""
+REMOTEHOST=""
 tcert=""
 tpem=""
 tkey=""
@@ -175,7 +176,7 @@ get_transfer()
         fi
         wsrep_log_info "Using netcat as streamer"
         if [[ "$WSREP_SST_OPT_ROLE"  == "joiner" ]];then
-            if nc -h | grep -q ncat;then 
+            if nc -h 2>&1 | grep -q ncat;then 
                 tcmd="nc -l ${TSST_PORT}"
             else 
                 tcmd="nc -dl ${TSST_PORT}"
@@ -208,7 +209,7 @@ get_transfer()
                 tcmd="socat -u openssl-listen:${TSST_PORT},reuseaddr,cert=${tpem},cafile=${tcert}${sockopt} stdio"
             else
                 wsrep_log_info "Encrypting with cert=${tpem}, cafile=${tcert}"
-                tcmd="socat -u stdio openssl-connect:${REMOTEIP}:${TSST_PORT},cert=${tpem},cafile=${tcert}${sockopt}"
+                tcmd="socat -u stdio openssl-connect:${REMOTEHOST}:${TSST_PORT},cert=${tpem},cafile=${tcert}${sockopt}"
             fi
         elif [[ $encrypt -eq 3 ]];then
             wsrep_log_info "Using openssl based encryption with socat: with key and crt"
@@ -231,7 +232,7 @@ get_transfer()
                     tcmd="socat -u stdio openssl-connect:${REMOTEIP}:${TSST_PORT},cert=${tpem},key=${tkey},verify=0${sockopt}"
                 else
                     wsrep_log_info "Encrypting with cert=${tpem}, key=${tkey}, cafile=${tcert}"
-                    tcmd="socat -u stdio openssl-connect:${REMOTEIP}:${TSST_PORT},cert=${tpem},key=${tkey},cafile=${tcert}${sockopt}"
+                    tcmd="socat -u stdio openssl-connect:${REMOTEHOST}:${TSST_PORT},cert=${tpem},key=${tkey},cafile=${tcert}${sockopt}"
                 fi
             fi
 
@@ -250,7 +251,11 @@ parse_cnf()
 {
     local group=$1
     local var=$2
-    reval=$($MY_PRINT_DEFAULTS $group | awk -F= '{if ($1 ~ /_/) { gsub(/_/,"-",$1); print $1"="$2 } else { print $0 }}' | grep -- "--$var=" | cut -d= -f2-)
+    # print the default settings for given group using my_print_default.
+    # normalize the variable names specified in cnf file (user can use _ or - for example log-bin or log_bin)
+    # then grep for needed variable
+    # finally get the variable value (if variables has been specified multiple time use the last value only)
+    reval=$($MY_PRINT_DEFAULTS $group | awk -F= '{if ($1 ~ /_/) { gsub(/_/,"-",$1); print $1"="$2 } else { print $0 }}' | grep -- "--$var=" | cut -d= -f2- | tail -1)
     if [[ -z $reval ]];then 
         [[ -n $3 ]] && reval=$3
     fi
@@ -491,6 +496,10 @@ setup_ports()
     if [[ "$WSREP_SST_OPT_ROLE"  == "donor" ]];then
         SST_PORT=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $2 }')
         REMOTEIP=$(echo $WSREP_SST_OPT_ADDR | awk -F ':' '{ print $1 }')
+        REMOTEHOST=$(getent hosts $REMOTEIP | awk '{ print $2 }')
+        if [[ -z $REMOTEHOST ]];then
+            REMOTEHOST=$REMOTEIP
+        fi
         lsn=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $4 }')
         sst_ver=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $5 }')
     else
@@ -680,6 +689,7 @@ then
 
     if [ $WSREP_SST_OPT_BYPASS -eq 0 ]
     then
+        usrst=0
         if [[ -z $sst_ver ]];then 
             wsrep_log_error "Upgrade joiner to 5.6.21 or higher for backup locks support"
             wsrep_log_error "The joiner is not supported for this version of donor"
@@ -695,14 +705,14 @@ then
         itmpdir=$(mktemp -d)
         wsrep_log_info "Using $itmpdir as innobackupex temporary directory"
 
-        if [ "$WSREP_SST_OPT_USER" != "(null)" ]; then
+        if [[ -n "${WSREP_SST_OPT_USER:-}" && "$WSREP_SST_OPT_USER" != "(null)" ]]; then
            INNOEXTRA+=" --user=$WSREP_SST_OPT_USER"
+           usrst=1
         fi
 
-        if [ -n "$WSREP_SST_OPT_PSWD" ]; then
-#           INNOEXTRA+=" --password=$WSREP_SST_OPT_PSWD"
-           export MYSQL_PWD="$WSREP_SST_OPT_PSWD"
-        else
+        if [ -n "${WSREP_SST_OPT_PSWD:-}" ]; then
+           INNOEXTRA+=" --password=$WSREP_SST_OPT_PSWD"
+        elif [[ $usrst -eq 1 ]];then
            # Empty password, used for testing, debugging etc.
            INNOEXTRA+=" --password="
         fi
@@ -868,7 +878,8 @@ then
     then
 
         if [[ -d ${DATA}/.sst ]];then
-            wsrep_log_info "WARNING: Stale temporary SST directory: ${DATA}/.sst from previous state transfer"
+            wsrep_log_info "WARNING: Stale temporary SST directory: ${DATA}/.sst from previous state transfer. Removing"
+            rm -rf ${DATA}/.sst
         fi
         mkdir -p ${DATA}/.sst
         (recv_joiner $DATA/.sst "${stagemsg}-SST" 0 0) &

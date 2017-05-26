@@ -24,7 +24,7 @@
  pre- and end 'blank space' are removed from options and values. The
  following escape sequences are recognized in values:  \b \t \n \r \\
 
- The following arguments are handled automaticly;  If used, they must be
+ The following arguments are handled automatically;  If used, they must be
  first argument on the command line!
  --no-defaults	; no options are read.
  --defaults-file=full-path-to-default-file	; Only this file will be read.
@@ -62,7 +62,7 @@
    check the pointer, use "----args-separator----" here to ease debug
    if someone misused it.
 
-   The args seprator will only be added when
+   The args separator will only be added when
    my_getopt_use_args_seprator is set to TRUE before calling
    load_defaults();
 
@@ -90,7 +90,7 @@ static my_bool defaults_already_read= FALSE;
 
 /* Which directories are searched for options (and in which order) */
 
-#define MAX_DEFAULT_DIRS 6
+#define MAX_DEFAULT_DIRS 7
 #define DEFAULT_DIRS_SIZE (MAX_DEFAULT_DIRS + 1)  /* Terminate with NULL */
 static const char **default_directories = NULL;
 
@@ -363,7 +363,7 @@ err:
 
   RETURN
     0 - ok
-    1 - error occured
+    1 - error occurred
 */
 
 static int handle_default_option(void *in_ctx, const char *group_name,
@@ -565,7 +565,7 @@ int my_load_defaults(const char *conf_file, const char **groups,
   for (; *groups ; groups++)
     group.count++;
 
-  if (my_init_dynamic_array(&args, sizeof(char*),*argc, 32, MYF(0)))
+  if (my_init_dynamic_array(&args, sizeof(char*), 128, 64, MYF(0)))
     goto err;
 
   ctx.alloc= &alloc;
@@ -576,6 +576,7 @@ int my_load_defaults(const char *conf_file, const char **groups,
                                      handle_default_option, (void *) &ctx,
                                      dirs)))
   {
+    delete_dynamic(&args);
     free_root(&alloc,MYF(0));
     DBUG_RETURN(error);
   }
@@ -596,7 +597,7 @@ int my_load_defaults(const char *conf_file, const char **groups,
   (*argv)+= args_used;
 
   /*
-    Check if we wan't to see the new argument list
+    Check if we want to see the new argument list
     This options must always be the last of the default options
   */
   if (*argc >= 2 && !strcmp(argv[0][1],"--print-defaults"))
@@ -1123,43 +1124,7 @@ static int add_directory(MEM_ROOT *alloc, const char *dir, const char **dirs)
   return 0;
 }
 
-
 #ifdef __WIN__
-/*
-  This wrapper for GetSystemWindowsDirectory() will dynamically bind to the
-  function if it is available, emulate it on NT4 Terminal Server by stripping
-  the \SYSTEM32 from the end of the results of GetSystemDirectory(), or just
-  return GetSystemDirectory().
- */
-
-typedef UINT (WINAPI *GET_SYSTEM_WINDOWS_DIRECTORY)(LPSTR, UINT);
-
-static size_t my_get_system_windows_directory(char *buffer, size_t size)
-{
-  size_t count;
-  GET_SYSTEM_WINDOWS_DIRECTORY
-    func_ptr= (GET_SYSTEM_WINDOWS_DIRECTORY)
-              GetProcAddress(GetModuleHandle("kernel32.dll"),
-                                             "GetSystemWindowsDirectoryA");
-
-  if (func_ptr)
-    return func_ptr(buffer, (uint) size);
-
-  /*
-    Windows NT 4.0 Terminal Server Edition:  
-    To retrieve the shared Windows directory, call GetSystemDirectory and
-    trim the "System32" element from the end of the returned path.
-  */
-  count= GetSystemDirectory(buffer, (uint) size);
-  if (count > 8 && stricmp(buffer+(count-8), "\\System32") == 0)
-  {
-    count-= 8;
-    buffer[count] = '\0';
-  }
-  return count;
-}
-
-
 static const char *my_get_module_parent(char *buf, size_t size)
 {
   char *last= NULL;
@@ -1208,7 +1173,7 @@ static const char **init_default_directories(MEM_ROOT *alloc)
 
   {
     char fname_buffer[FN_REFLEN];
-    if (my_get_system_windows_directory(fname_buffer, sizeof(fname_buffer)))
+    if (GetSystemWindowsDirectory(fname_buffer, sizeof(fname_buffer)))
       errors += add_directory(alloc, fname_buffer, dirs);
 
     if (GetWindowsDirectory(fname_buffer, sizeof(fname_buffer)))
@@ -1217,7 +1182,12 @@ static const char **init_default_directories(MEM_ROOT *alloc)
     errors += add_directory(alloc, "C:/", dirs);
 
     if (my_get_module_parent(fname_buffer, sizeof(fname_buffer)) != NULL)
+    {
       errors += add_directory(alloc, fname_buffer, dirs);
+
+      strncat(fname_buffer, "/data", sizeof(fname_buffer));
+      errors += add_directory(alloc, fname_buffer, dirs);
+    }
   }
 
 #else

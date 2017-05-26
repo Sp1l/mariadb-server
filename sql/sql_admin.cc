@@ -1,5 +1,5 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates.
-   Copyright (c) 2012, 2015, MariaDB
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2016, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -54,7 +54,7 @@ static bool admin_recreate_table(THD *thd, TABLE_LIST *table_list)
 
   DEBUG_SYNC(thd, "ha_admin_try_alter");
   tmp_disable_binlog(thd); // binlogging is done by caller if wanted
-  result_code= (open_temporary_tables(thd, table_list) ||
+  result_code= (thd->open_temporary_tables(table_list) ||
                 mysql_recreate_table(thd, table_list, false));
   reenable_binlog(thd);
   /*
@@ -131,7 +131,7 @@ static int prepare_for_repair(THD *thd, TABLE_LIST *table_list,
       DBUG_RETURN(0);
     has_mdl_lock= TRUE;
 
-    share= tdc_acquire_share_shortlived(thd, table_list, GTS_TABLE);
+    share= tdc_acquire_share(thd, table_list, GTS_TABLE);
     if (share == NULL)
       DBUG_RETURN(0);				// Can't open frm file
 
@@ -163,7 +163,7 @@ static int prepare_for_repair(THD *thd, TABLE_LIST *table_list,
     - Run a normal repair using the new index file and the old data file
   */
 
-  if (table->s->frm_version != FRM_VER_TRUE_VARCHAR &&
+  if (table->s->frm_version < FRM_VER_TRUE_VARCHAR &&
       table->s->varchar_fields)
   {
     error= send_check_errmsg(thd, table_list, "repair",
@@ -261,7 +261,10 @@ static int prepare_for_repair(THD *thd, TABLE_LIST *table_list,
 end:
   thd->locked_tables_list.unlink_all_closed_tables(thd, NULL, 0);
   if (table == &tmp_table)
-    closefrm(table, 1);				// Free allocated memory
+  {
+    closefrm(table);
+    tdc_release_share(table->s);
+  }
   /* In case of a temporary table there will be no metadata lock. */
   if (error && has_mdl_lock)
     thd->mdl_context.release_transactional_locks();
@@ -288,7 +291,128 @@ static inline bool table_not_corrupt_error(uint sql_errno)
           sql_errno == ER_LOCK_WAIT_TIMEOUT ||
           sql_errno == ER_LOCK_DEADLOCK ||
           sql_errno == ER_CANT_LOCK_LOG_TABLE ||
-          sql_errno == ER_OPEN_AS_READONLY);
+          sql_errno == ER_OPEN_AS_READONLY ||
+          sql_errno == ER_WRONG_OBJECT);
+}
+
+#ifndef DBUG_OFF
+// It is counter for debugging fail on second call of open_only_one_table
+static int debug_fail_counter= 0;
+#endif
+
+static bool open_only_one_table(THD* thd, TABLE_LIST* table,
+                                bool repair_table_use_frm,
+                                bool is_view_operator_func)
+{
+  LEX *lex= thd->lex;
+  SELECT_LEX *select= &lex->select_lex;
+  TABLE_LIST *save_next_global, *save_next_local;
+  bool open_error;
+  save_next_global= table->next_global;
+  table->next_global= 0;
+  save_next_local= table->next_local;
+  table->next_local= 0;
+  select->table_list.first= table;
+  /*
+    Time zone tables and SP tables can be add to lex->query_tables list,
+    so it have to be prepared.
+    TODO: Investigate if we can put extra tables into argument instead of
+    using lex->query_tables
+  */
+  lex->query_tables= table;
+  lex->query_tables_last= &table->next_global;
+  lex->query_tables_own_last= 0;
+
+  DBUG_EXECUTE_IF("fail_2call_open_only_one_table", {
+                  if (debug_fail_counter)
+                  {
+                    open_error= TRUE;
+                    goto dbug_err;
+                  }
+                  else
+                    debug_fail_counter++;
+                  });
+
+  /*
+    CHECK TABLE command is allowed for views as well. Check on alter flags
+    to differentiate from ALTER TABLE...CHECK PARTITION on which view is not
+    allowed.
+  */
+  if (lex->alter_info.flags & Alter_info::ALTER_ADMIN_PARTITION ||
+      !is_view_operator_func)
+  {
+    table->required_type=FRMTYPE_TABLE;
+    DBUG_ASSERT(!lex->only_view);
+  }
+  else if (lex->only_view)
+  {
+    table->required_type= FRMTYPE_VIEW;
+  }
+  else if (!lex->only_view && lex->sql_command == SQLCOM_REPAIR)
+  {
+    table->required_type= FRMTYPE_TABLE;
+  }
+
+  if (lex->sql_command == SQLCOM_CHECK ||
+      lex->sql_command == SQLCOM_REPAIR ||
+      lex->sql_command == SQLCOM_ANALYZE ||
+      lex->sql_command == SQLCOM_OPTIMIZE)
+    thd->prepare_derived_at_open= TRUE;
+  if (!thd->locked_tables_mode && repair_table_use_frm)
+  {
+    /*
+      If we're not under LOCK TABLES and we're executing REPAIR TABLE
+      USE_FRM, we need to ignore errors from open_and_lock_tables().
+      REPAIR TABLE USE_FRM is a heavy weapon used when a table is
+      critically damaged, so open_and_lock_tables() will most likely
+      report errors. Those errors are not interesting for the user
+      because it's already known that the table is badly damaged.
+    */
+
+    Diagnostics_area *da= thd->get_stmt_da();
+    Warning_info tmp_wi(thd->query_id, false, true);
+
+    da->push_warning_info(&tmp_wi);
+
+    open_error= (thd->open_temporary_tables(table) ||
+                 open_and_lock_tables(thd, table, TRUE, 0));
+
+    da->pop_warning_info();
+  }
+  else
+  {
+    /*
+      It's assumed that even if it is REPAIR TABLE USE_FRM, the table
+      can be opened if we're under LOCK TABLES (otherwise LOCK TABLES
+      would fail). Thus, the only errors we could have from
+      open_and_lock_tables() are logical ones, like incorrect locking
+      mode. It does make sense for the user to see such errors.
+    */
+
+    open_error= (thd->open_temporary_tables(table) ||
+                 open_and_lock_tables(thd, table, TRUE, 0));
+  }
+
+dbug_err:
+
+  thd->prepare_derived_at_open= FALSE;
+
+  /*
+    MERGE engine may adjust table->next_global chain, thus we have to
+    append save_next_global after merge children.
+  */
+  if (save_next_global)
+  {
+    TABLE_LIST *table_list_iterator= table;
+    while (table_list_iterator->next_global)
+      table_list_iterator= table_list_iterator->next_global;
+    table_list_iterator->next_global= save_next_global;
+    save_next_global->prev_global= &table_list_iterator->next_global;
+  }
+
+  table->next_local= save_next_local;
+
+  return open_error;
 }
 
 
@@ -313,7 +437,6 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
                                                        HA_CHECK_OPT *))
 {
   TABLE_LIST *table;
-  SELECT_LEX *select= &thd->lex->select_lex;
   List<Item> field_list;
   Item *item;
   Protocol *protocol= thd->protocol;
@@ -368,6 +491,7 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
     char* db = table->db;
     bool fatal_error=0;
     bool open_error;
+    bool collect_eis=  FALSE;
 
     DBUG_PRINT("admin", ("table: '%s'.'%s'", table->db, table->table_name));
     strxmov(table_name, db, ".", table->table_name, NullS);
@@ -379,83 +503,17 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
       To allow concurrent execution of read-only operations we acquire
       weak metadata lock for them.
     */
-    table->mdl_request.set_type((lock_type >= TL_WRITE_ALLOW_WRITE) ?
-                                MDL_SHARED_NO_READ_WRITE : MDL_SHARED_READ);
+    table->mdl_request.set_type(lex->sql_command == SQLCOM_REPAIR
+                                ? MDL_SHARED_NO_READ_WRITE
+                                : lock_type >= TL_WRITE_ALLOW_WRITE
+                                ? MDL_SHARED_WRITE : MDL_SHARED_READ);
+
     /* open only one table from local list of command */
+    while (1)
     {
-      TABLE_LIST *save_next_global, *save_next_local;
-      save_next_global= table->next_global;
-      table->next_global= 0;
-      save_next_local= table->next_local;
-      table->next_local= 0;
-      select->table_list.first= table;
-      /*
-        Time zone tables and SP tables can be add to lex->query_tables list,
-        so it have to be prepared.
-        TODO: Investigate if we can put extra tables into argument instead of
-        using lex->query_tables
-      */
-      lex->query_tables= table;
-      lex->query_tables_last= &table->next_global;
-      lex->query_tables_own_last= 0;
-
-      if (view_operator_func == NULL)
-      {
-        table->required_type=FRMTYPE_TABLE;
-        DBUG_ASSERT(!lex->only_view);
-      }
-      else if (lex->only_view)
-      {
-        table->required_type= FRMTYPE_VIEW;
-      }
-      else if (!lex->only_view && lex->sql_command == SQLCOM_REPAIR)
-      {
-        table->required_type= FRMTYPE_TABLE;
-      }
-
-      if (lex->sql_command == SQLCOM_CHECK ||
-          lex->sql_command == SQLCOM_REPAIR ||
-          lex->sql_command == SQLCOM_ANALYZE ||
-          lex->sql_command == SQLCOM_OPTIMIZE)
-	thd->prepare_derived_at_open= TRUE;
-      if (!thd->locked_tables_mode && repair_table_use_frm)
-      {
-        /*
-          If we're not under LOCK TABLES and we're executing REPAIR TABLE
-          USE_FRM, we need to ignore errors from open_and_lock_tables().
-          REPAIR TABLE USE_FRM is a heavy weapon used when a table is
-          critically damaged, so open_and_lock_tables() will most likely
-          report errors. Those errors are not interesting for the user
-          because it's already known that the table is badly damaged.
-        */
-
-        Diagnostics_area *da= thd->get_stmt_da();
-        Warning_info tmp_wi(thd->query_id, false, true);
-
-        da->push_warning_info(&tmp_wi);
-
-        open_error= (open_temporary_tables(thd, table) ||
-                     open_and_lock_tables(thd, table, TRUE, 0));
-
-        da->pop_warning_info();
-      }
-      else
-      {
-        /*
-          It's assumed that even if it is REPAIR TABLE USE_FRM, the table
-          can be opened if we're under LOCK TABLES (otherwise LOCK TABLES
-          would fail). Thus, the only errors we could have from
-          open_and_lock_tables() are logical ones, like incorrect locking
-          mode. It does make sense for the user to see such errors.
-        */
-
-        open_error= (open_temporary_tables(thd, table) ||
-                     open_and_lock_tables(thd, table, TRUE, 0));
-      }
-      thd->prepare_derived_at_open= FALSE;
-
-      table->next_global= save_next_global;
-      table->next_local= save_next_local;
+      open_error= open_only_one_table(thd, table,
+                                      repair_table_use_frm,
+                                      (view_operator_func != NULL));
       thd->open_options&= ~extra_open_options;
 
       /*
@@ -475,6 +533,20 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
         result_code= HA_ADMIN_FAILED;
         goto send_result;
       }
+
+      if (!table->table || table->mdl_request.type != MDL_SHARED_WRITE ||
+          table->table->file->ha_table_flags() & HA_CONCURRENT_OPTIMIZE)
+        break;
+
+      trans_rollback_stmt(thd);
+      trans_rollback(thd);
+      close_thread_tables(thd);
+      table->table= NULL;
+      thd->mdl_context.release_transactional_locks();
+      table->mdl_request.init(MDL_key::TABLE, table->db, table->table_name,
+                              MDL_SHARED_NO_READ_WRITE, MDL_TRANSACTION);
+    }
+
 #ifdef WITH_PARTITION_STORAGE_ENGINE
       if (table->table)
       {
@@ -513,7 +585,6 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
         }
       }
 #endif
-    }
     DBUG_PRINT("admin", ("table: 0x%lx", (long) table->table));
 
     if (prepare_func)
@@ -614,18 +685,18 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
 
     /*
       Close all instances of the table to allow MyISAM "repair"
-      to rename files.
+      (which is internally also used from "optimize") to rename files.
       @todo: This code does not close all instances of the table.
       It only closes instances in other connections, but if this
       connection has LOCK TABLE t1 a READ, t1 b WRITE,
       both t1 instances will be kept open.
-      There is no need to execute this branch for InnoDB, which does
-      repair by recreate. There is no need to do it for OPTIMIZE,
-      which doesn't move files around.
-      Hence, this code should be moved to prepare_for_repair(),
-      and executed only for MyISAM engine.
+
+      Note that this code is only executed for engines that request
+      MDL_SHARED_NO_READ_WRITE lock (MDL_SHARED_WRITE cannot be upgraded)
+      by *not* having HA_CONCURRENT_OPTIMIZE table_flag.
     */
-    if (lock_type == TL_WRITE && !table->table->s->tmp_table)
+    if (lock_type == TL_WRITE && !table->table->s->tmp_table &&
+                        table->mdl_request.type > MDL_SHARED_WRITE)
     {
       if (wait_while_table_is_used(thd, table->table,
                                    HA_EXTRA_PREPARE_FOR_RENAME))
@@ -683,41 +754,18 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
     if (operator_func == &handler::ha_analyze)
     {
       TABLE *tab= table->table;
-      Field **field_ptr= tab->field;
 
       if (lex->with_persistent_for_clause &&
           tab->s->table_category != TABLE_CATEGORY_USER)
       {
         compl_result_code= result_code= HA_ADMIN_INVALID;
       }
+      collect_eis=
+        (table->table->s->table_category == TABLE_CATEGORY_USER &&
+         (get_use_stat_tables_mode(thd) > NEVER ||
+          lex->with_persistent_for_clause));
 
-      if (!lex->column_list)
-      { 
-        uint fields= 0;
-        for ( ; *field_ptr; field_ptr++, fields++) ;         
-        bitmap_set_prefix(tab->read_set, fields);
-      }
-      else
-      {
-        int pos;
-        LEX_STRING *column_name;
-        List_iterator_fast<LEX_STRING> it(*lex->column_list);
 
-        bitmap_clear_all(tab->read_set);
-        while ((column_name= it++))
-	{
-          if (tab->s->fieldnames.type_names == 0 ||
-              (pos= find_type(&tab->s->fieldnames, column_name->str,
-                              column_name->length, 1)) <= 0)
-          {
-            compl_result_code= result_code= HA_ADMIN_INVALID;
-            break;
-          }
-          bitmap_set_bit(tab->read_set, pos-1);
-        } 
-        tab->file->column_bitmaps_signal(); 
-      }
-      
       if (!lex->index_list)
       {
         tab->keys_in_use_for_query.init(tab->s->keys);
@@ -752,17 +800,88 @@ static bool mysql_admin_table(THD* thd, TABLE_LIST* tables,
       DBUG_PRINT("admin", ("operator_func returned: %d", result_code));
     }
 
-    if (compl_result_code == HA_ADMIN_OK &&
-        operator_func == &handler::ha_analyze && 
-        table->table->s->table_category == TABLE_CATEGORY_USER &&
-        (get_use_stat_tables_mode(thd) > NEVER ||
-         lex->with_persistent_for_clause)) 
+    if (compl_result_code == HA_ADMIN_OK && collect_eis)
     {
-      if (!(compl_result_code=
-            alloc_statistics_for_table(thd, table->table)) &&
-          !(compl_result_code=
-            collect_statistics_for_table(thd, table->table)))
-        compl_result_code= update_statistics_for_table(thd, table->table);
+      /*
+        Here we close and reopen table in read mode because operation of
+        collecting statistics is long and it will be better do not block
+        the table completely.
+        InnoDB/XtraDB will allow read/write and MyISAM read/insert.
+      */
+      trans_commit_stmt(thd);
+      trans_commit(thd);
+      thd->open_options|= extra_open_options;
+      close_thread_tables(thd);
+      table->table= NULL;
+      thd->mdl_context.release_transactional_locks();
+      table->mdl_request.init(MDL_key::TABLE, table->db, table->table_name,
+                              MDL_SHARED_NO_READ_WRITE, MDL_TRANSACTION);
+      table->mdl_request.set_type(MDL_SHARED_READ);
+
+      table->lock_type= TL_READ;
+      DBUG_ASSERT(view_operator_func == NULL);
+      open_error= open_only_one_table(thd, table,
+                                      repair_table_use_frm, FALSE);
+      thd->open_options&= ~extra_open_options;
+
+      if (!open_error)
+      {
+        TABLE *tab= table->table;
+        Field **field_ptr= tab->field;
+        if (!lex->column_list)
+        {
+          bitmap_clear_all(tab->read_set);
+          for (uint fields= 0; *field_ptr; field_ptr++, fields++)
+          {
+            enum enum_field_types type= (*field_ptr)->type();
+            if (type < MYSQL_TYPE_MEDIUM_BLOB ||
+                type > MYSQL_TYPE_BLOB)
+              bitmap_set_bit(tab->read_set, fields);
+            else
+              push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
+                                  ER_NO_EIS_FOR_FIELD,
+                                  ER_THD(thd, ER_NO_EIS_FOR_FIELD),
+                                  (*field_ptr)->field_name);
+          }
+        }
+        else
+        {
+          int pos;
+          LEX_STRING *column_name;
+          List_iterator_fast<LEX_STRING> it(*lex->column_list);
+
+          bitmap_clear_all(tab->read_set);
+          while ((column_name= it++))
+          {
+            if (tab->s->fieldnames.type_names == 0 ||
+                (pos= find_type(&tab->s->fieldnames, column_name->str,
+                                column_name->length, 1)) <= 0)
+            {
+              compl_result_code= result_code= HA_ADMIN_INVALID;
+              break;
+            }
+            pos--;
+            enum enum_field_types type= tab->field[pos]->type();
+            if (type < MYSQL_TYPE_MEDIUM_BLOB ||
+                type > MYSQL_TYPE_BLOB)
+              bitmap_set_bit(tab->read_set, pos);
+            else
+              push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
+                                  ER_NO_EIS_FOR_FIELD,
+                                  ER_THD(thd, ER_NO_EIS_FOR_FIELD),
+                                  column_name->str);
+          }
+          tab->file->column_bitmaps_signal();
+        }
+        if (!(compl_result_code=
+              alloc_statistics_for_table(thd, table->table)) &&
+            !(compl_result_code=
+              collect_statistics_for_table(thd, table->table)))
+          compl_result_code= update_statistics_for_table(thd, table->table);
+      }
+      else
+        compl_result_code= HA_ADMIN_FAILED;
+
       if (compl_result_code)
         result_code= HA_ADMIN_FAILED;
       else
@@ -915,7 +1034,7 @@ send_result_message:
         table->mdl_request.ticket= NULL;
         DEBUG_SYNC(thd, "ha_admin_open_ltable");
         table->mdl_request.set_type(MDL_SHARED_WRITE);
-        if (!open_temporary_tables(thd, table) &&
+        if (!thd->open_temporary_tables(table) &&
             (table->table= open_ltable(thd, table, lock_type, 0)))
         {
           uint save_flags;
@@ -1180,9 +1299,8 @@ bool Sql_cmd_analyze_table::execute(THD *thd)
   if (check_table_access(thd, SELECT_ACL | INSERT_ACL, first_table,
                          FALSE, UINT_MAX, FALSE))
     goto error;
+  WSREP_TO_ISOLATION_BEGIN_WRTCHK(NULL, NULL, first_table);
   thd->enable_slow_log= opt_log_slow_admin_statements;
-  WSREP_TO_ISOLATION_BEGIN(first_table->db, first_table->table_name, NULL);
-
   res= mysql_admin_table(thd, first_table, &m_lex->check_opt,
                          "analyze", lock_type, 1, 0, 0, 0,
                          &handler::ha_analyze, 0);
@@ -1237,7 +1355,7 @@ bool Sql_cmd_optimize_table::execute(THD *thd)
   if (check_table_access(thd, SELECT_ACL | INSERT_ACL, first_table,
                          FALSE, UINT_MAX, FALSE))
     goto error; /* purecov: inspected */
-  WSREP_TO_ISOLATION_BEGIN(first_table->db, first_table->table_name, NULL)
+  WSREP_TO_ISOLATION_BEGIN_WRTCHK(NULL, NULL, first_table);
   thd->enable_slow_log= opt_log_slow_admin_statements;
   res= (specialflag & SPECIAL_NO_NEW_FUNC) ?
     mysql_recreate_table(thd, first_table, true) :
@@ -1271,7 +1389,7 @@ bool Sql_cmd_repair_table::execute(THD *thd)
                          FALSE, UINT_MAX, FALSE))
     goto error; /* purecov: inspected */
   thd->enable_slow_log= opt_log_slow_admin_statements;
-  WSREP_TO_ISOLATION_BEGIN(first_table->db, first_table->table_name, NULL)
+  WSREP_TO_ISOLATION_BEGIN_WRTCHK(NULL, NULL, first_table);
   res= mysql_admin_table(thd, first_table, &m_lex->check_opt, "repair",
                          TL_WRITE, 1,
                          MY_TEST(m_lex->check_opt.sql_flags & TT_USEFRM),

@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #include <wsrep.h>
 
@@ -50,6 +50,8 @@ struct wsrep_thd_shadow {
   ulong                tx_isolation;
   char                 *db;
   size_t               db_length;
+  my_hrtime_t          user_time;
+  longlong             row_count_func;
 };
 
 // Global wsrep parameters
@@ -86,7 +88,6 @@ extern my_bool     wsrep_slave_FK_checks;
 extern my_bool     wsrep_slave_UK_checks;
 extern ulong       wsrep_running_threads;
 extern bool        wsrep_new_cluster;
-extern my_bool     wsrep_creating_startup_threads;
 extern bool        wsrep_gtid_mode;
 extern uint32      wsrep_gtid_domain_id;
 
@@ -161,6 +162,7 @@ extern void wsrep_kill_mysql(THD *thd);
 /* new defines */
 extern void wsrep_stop_replication(THD *thd);
 extern bool wsrep_start_replication();
+extern bool wsrep_must_sync_wait(THD* thd, uint mask = WSREP_SYNC_WAIT_BEFORE_READ);
 extern bool wsrep_sync_wait(THD* thd, uint mask = WSREP_SYNC_WAIT_BEFORE_READ);
 extern int  wsrep_check_opts();
 extern void wsrep_prepend_PATH (const char* path);
@@ -168,11 +170,16 @@ extern void wsrep_prepend_PATH (const char* path);
 /* Other global variables */
 extern wsrep_seqno_t wsrep_locked_seqno;
 
-#define WSREP_ON \
+#define WSREP_ON                         \
   (global_system_variables.wsrep_on)
 
+#define WSREP_ON_NEW                     \
+  ((global_system_variables.wsrep_on) && \
+   wsrep_provider                     && \
+   strcmp(wsrep_provider, WSREP_NONE))
+
 #define WSREP(thd) \
-  (WSREP_ON && wsrep && (thd && thd->variables.wsrep_on))
+  (WSREP_ON && thd->variables.wsrep_on)
 
 #define WSREP_CLIENT(thd) \
     (WSREP(thd) && thd->wsrep_client_thread)
@@ -280,10 +287,7 @@ void wsrep_to_isolation_end(THD *thd);
 void wsrep_cleanup_transaction(THD *thd);
 int wsrep_to_buf_helper(
   THD* thd, const char *query, uint query_len, uchar** buf, size_t* buf_len);
-int wsrep_create_sp(THD *thd, uchar** buf, size_t* buf_len);
-int wsrep_create_trigger_query(THD *thd, uchar** buf, size_t* buf_len);
 int wsrep_create_event_query(THD *thd, uchar** buf, size_t* buf_len);
-int wsrep_alter_event_query(THD *thd, uchar** buf, size_t* buf_len);
 
 extern bool
 wsrep_grant_mdl_exception(MDL_context *requestor_ctx,
@@ -304,14 +308,14 @@ void wsrep_close_applier_threads(int count);
 void wsrep_wait_appliers_close(THD *thd);
 void wsrep_kill_mysql(THD *thd);
 void wsrep_close_threads(THD *thd);
-int wsrep_create_sp(THD *thd, uchar** buf, size_t* buf_len);
 void wsrep_copy_query(THD *thd);
 bool wsrep_is_show_query(enum enum_sql_command command);
 void wsrep_replay_transaction(THD *thd);
 bool wsrep_create_like_table(THD* thd, TABLE_LIST* table,
                              TABLE_LIST* src_table,
 	                     HA_CREATE_INFO *create_info);
-int wsrep_create_trigger_query(THD *thd, uchar** buf, size_t* buf_len);
+bool wsrep_node_is_donor();
+bool wsrep_node_is_synced();
 
 #else /* WITH_WSREP */
 
@@ -328,6 +332,7 @@ int wsrep_create_trigger_query(THD *thd, uchar** buf, size_t* buf_len);
 #define wsrep_prepend_PATH(X)
 #define wsrep_before_SE() (0)
 #define wsrep_init_startup(X)
+#define wsrep_must_sync_wait(...) (0)
 #define wsrep_sync_wait(...) (0)
 #define wsrep_to_isolation_begin(...) (0)
 #define wsrep_register_hton(...) do { } while(0)
@@ -341,7 +346,6 @@ int wsrep_create_trigger_query(THD *thd, uchar** buf, size_t* buf_len);
 #define wsrep_thr_init() do {} while(0)
 #define wsrep_thr_deinit() do {} while(0)
 #define wsrep_running_threads (0)
-#define wsrep_creating_startup_threads (0)
 
 #endif /* WITH_WSREP */
 #endif /* WSREP_MYSQLD_H */

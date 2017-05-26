@@ -448,19 +448,7 @@ static const TABLE_FIELD_DEF mysql_gtid_slave_pos_tabledef= {
   mysql_rpl_slave_state_pk_parts
 };
 
-class Gtid_db_intact : public Table_check_intact
-{
-protected:
-  void report_error(uint, const char *fmt, ...)
-  {
-    va_list args;
-    va_start(args, fmt);
-    error_log_print(ERROR_LEVEL, fmt, args);
-    va_end(args);
-  }
-};
-
-static Gtid_db_intact gtid_table_intact;
+static Table_check_intact_log_error gtid_table_intact;
 
 /*
   Check that the mysql.gtid_slave_pos table has the correct definition.
@@ -567,7 +555,7 @@ rpl_slave_state::record_gtid(THD *thd, const rpl_gtid *gtid, uint64 sub_id,
     Updates in slave state table should not be appended to galera transaction
     writeset.
   */
-  thd->wsrep_skip_append_keys= true;
+  thd->wsrep_ignore_table= true;
 #endif
 
   if (!in_transaction)
@@ -685,7 +673,7 @@ IF_DBUG(dbug_break:, )
 end:
 
 #ifdef WITH_WSREP
-  thd->wsrep_skip_append_keys= false;
+  thd->wsrep_ignore_table= false;
 #endif
 
   if (table_opened)
@@ -1015,8 +1003,8 @@ gtid_parser_helper(char **ptr, char *end, rpl_gtid *out_gtid)
   if (err != 0)
     return 1;
 
-  out_gtid->domain_id= v1;
-  out_gtid->server_id= v2;
+  out_gtid->domain_id= (uint32) v1;
+  out_gtid->server_id= (uint32) v2;
   out_gtid->seq_no= v3;
   *ptr= q;
   return 0;
@@ -1127,7 +1115,7 @@ rpl_slave_state::is_empty()
 }
 
 
-rpl_binlog_state::rpl_binlog_state()
+void rpl_binlog_state::init()
 {
   my_hash_init(&hash, &my_charset_bin, 32, offsetof(element, domain_id),
                sizeof(uint32), NULL, my_free, HASH_UNIQUE);
@@ -1136,7 +1124,6 @@ rpl_binlog_state::rpl_binlog_state()
                    MY_MUTEX_INIT_SLOW);
   initialized= 1;
 }
-
 
 void
 rpl_binlog_state::reset_nolock()
@@ -2058,7 +2045,7 @@ gtid_waiting::wait_for_pos(THD *thd, String *gtid_str, longlong timeout_us)
   {
     case -1:
       status_var_increment(thd->status_var.master_gtid_wait_timeouts);
-      /* Deliberate fall through. */
+      /* fall through */
     case 0:
       status_var_add(thd->status_var.master_gtid_wait_time,
                      microsecond_interval_timer() - before);

@@ -11,7 +11,7 @@
 
   You should have received a copy of the GNU General Public License
   along with this program; if not, write to the Free Software
-  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #define MYSQL_SERVER 1
 #include "mysql_version.h"
@@ -2683,7 +2683,8 @@ int spider_initinal_xa_recover(
         FALSE, open_tables_backup, TRUE, &error_num))
     )
       goto error_open_table;
-    init_read_record(read_record, thd, table_xa, NULL, TRUE, FALSE, FALSE);
+    init_read_record(read_record, thd, table_xa, NULL, NULL, TRUE, FALSE,
+                     FALSE);
   }
   SPD_INIT_ALLOC_ROOT(&mem_root, 4096, 0, MYF(MY_WME));
   while ((!(read_record->read_record(read_record))) && cnt < (int) len)
@@ -3710,7 +3711,7 @@ int spider_check_trx_and_get_conn(
         {
           TABLE *table = spider->get_table();
           TABLE_SHARE *table_share = table->s;
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
           char *db, *table_name;
           if (!(db = (char *)
             spider_bulk_malloc(spider_current_trx, 57, MYF(MY_WME),
@@ -3732,7 +3733,7 @@ int spider_check_trx_and_get_conn(
           table_name[table_share->table_name.length] = '\0';
           my_printf_error(ER_SPIDER_ALL_LINKS_FAILED_NUM,
             ER_SPIDER_ALL_LINKS_FAILED_STR, MYF(0), db, table_name);
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
           spider_free(trx, db, MYF(MY_WME));
 #endif
           DBUG_RETURN(ER_SPIDER_ALL_LINKS_FAILED_NUM);
@@ -3869,7 +3870,7 @@ int spider_check_trx_and_get_conn(
       {
         TABLE *table = spider->get_table();
         TABLE_SHARE *table_share = table->s;
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
         char *db, *table_name;
         if (!(db = (char *)
           spider_bulk_malloc(spider_current_trx, 57, MYF(MY_WME),
@@ -3891,7 +3892,7 @@ int spider_check_trx_and_get_conn(
         table_name[table_share->table_name.length] = '\0';
         my_printf_error(ER_SPIDER_LINK_MON_JUST_NG_NUM,
           ER_SPIDER_LINK_MON_JUST_NG_STR, MYF(0), db, table_name);
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
         spider_free(trx, db, MYF(MY_WME));
 #endif
         DBUG_RETURN(ER_SPIDER_LINK_MON_JUST_NG_NUM);
@@ -4015,7 +4016,7 @@ int spider_check_trx_and_get_conn(
       {
         TABLE *table = spider->get_table();
         TABLE_SHARE *table_share = table->s;
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
         char *db, *table_name;
         if (!(db = (char *)
           spider_bulk_malloc(spider_current_trx, 57, MYF(MY_WME),
@@ -4037,7 +4038,7 @@ int spider_check_trx_and_get_conn(
         table_name[table_share->table_name.length] = '\0';
         my_printf_error(ER_SPIDER_LINK_MON_JUST_NG_NUM,
           ER_SPIDER_LINK_MON_JUST_NG_STR, MYF(0), db, table_name);
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
         spider_free(trx, db, MYF(MY_WME));
 #endif
         DBUG_RETURN(ER_SPIDER_LINK_MON_JUST_NG_NUM);
@@ -4054,7 +4055,7 @@ THD *spider_create_tmp_thd()
 {
   THD *thd;
   DBUG_ENTER("spider_create_tmp_thd");
-  if (!(thd = new THD))
+  if (!(thd = new THD(0)))
     DBUG_RETURN(NULL);
 #if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100000
   thd->killed = NOT_KILLED;
@@ -4065,7 +4066,6 @@ THD *spider_create_tmp_thd()
   thd->locked_tables = FALSE;
 #endif
   thd->proc_info = "";
-  thd->thread_id = thd->variables.pseudo_thread_id = 0;
   thd->thread_stack = (char*) &thd;
   if (thd->store_globals())
     DBUG_RETURN(NULL);

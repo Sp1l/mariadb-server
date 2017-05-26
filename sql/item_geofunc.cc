@@ -1,6 +1,5 @@
-/*
-   Copyright (c) 2003-2007 MySQL AB, 2009, 2010 Sun Microsystems, Inc.
-   Use is subject to license terms.
+/* Copyright (c) 2003, 2016, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2016, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -41,7 +40,7 @@
 #include "opt_range.h"
 
 
-Field *Item_geometry_func::tmp_table_field(TABLE *t_arg)
+Field *Item_geometry_func::create_field_for_create_select(TABLE *t_arg)
 {
   Field *result;
   if ((result= new Field_geom(max_length, maybe_null, name, t_arg->s,
@@ -122,6 +121,65 @@ String *Item_func_geometry_from_wkb::val_str(String *str)
 }
 
 
+void report_json_error_ex(String *js, json_engine_t *je,
+                          const char *fname, int n_param,
+                          Sql_condition::enum_warning_level lv);
+
+String *Item_func_geometry_from_json::val_str(String *str)
+{
+  DBUG_ASSERT(fixed == 1);
+  Geometry_buffer buffer;
+  String *js= args[0]->val_str_ascii(&tmp_js);
+  uint32 srid= 0;
+  json_engine_t je;
+
+  if ((null_value= args[0]->null_value))
+    return 0;
+
+  if ((arg_count == 2) && !args[1]->null_value)
+    srid= (uint32)args[1]->val_int();
+
+  str->set_charset(&my_charset_bin);
+  if (str->reserve(SRID_SIZE, 512))
+    return 0;
+  str->length(0);
+  str->q_append(srid);
+
+  json_scan_start(&je, js->charset(), (const uchar *) js->ptr(),
+                  (const uchar *) js->end());
+
+  if ((null_value= !Geometry::create_from_json(&buffer, &je, str)))
+  {
+    int code= 0;
+
+    switch (je.s.error)
+    {
+    case Geometry::GEOJ_INCORRECT_GEOJSON:
+      code= ER_GEOJSON_INCORRECT;
+      break;
+    case Geometry::GEOJ_TOO_FEW_POINTS:
+      code= ER_GEOJSON_TOO_FEW_POINTS;
+      break;
+    case Geometry::GEOJ_POLYGON_NOT_CLOSED:
+      code= ER_GEOJSON_NOT_CLOSED;
+      break;
+    default:
+      report_json_error_ex(js, &je, func_name(), 0, Sql_condition::WARN_LEVEL_WARN);
+      return NULL;
+    }
+
+    if (code)
+    {
+      THD *thd= current_thd;
+      push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN, code,
+                          ER_THD(thd, code));
+    }
+    return 0;
+  }
+  return str;
+}
+
+
 String *Item_func_as_wkt::val_str_ascii(String *str)
 {
   DBUG_ASSERT(fixed == 1);
@@ -167,6 +225,37 @@ String *Item_func_as_wkb::val_str(String *str)
 
   str->copy(swkb->ptr() + SRID_SIZE, swkb->length() - SRID_SIZE,
 	    &my_charset_bin);
+  return str;
+}
+
+
+void Item_func_as_geojson::fix_length_and_dec()
+{
+  collation.set(default_charset(), DERIVATION_COERCIBLE, MY_REPERTOIRE_ASCII);
+  max_length=MAX_BLOB_WIDTH;
+  maybe_null= 1;
+}
+
+
+String *Item_func_as_geojson::val_str_ascii(String *str)
+{
+  DBUG_ASSERT(fixed == 1);
+  String arg_val;
+  String *swkb= args[0]->val_str(&arg_val);
+  Geometry_buffer buffer;
+  Geometry *geom= NULL;
+  const char *dummy;
+
+  if ((null_value=
+       (args[0]->null_value ||
+	!(geom= Geometry::construct(&buffer, swkb->ptr(), swkb->length())))))
+    return 0;
+
+  str->length(0);
+  str->set_charset(&my_charset_latin1);
+  if ((null_value= geom->as_json(str, FLOATING_POINT_DECIMALS, &dummy)))
+    return 0;
+
   return str;
 }
 
@@ -436,7 +525,7 @@ String *Item_func_convexhull::val_str(String *str_value)
   if (!cur_pi->get_next())
   {
     /* Single point. */
-    if (res_receiver.single_point(cur_pi->x, cur_pi->y))
+    if (res_receiver.single_point(cur_pi->node.shape.x, cur_pi->node.shape.y))
       goto mem_error;
     goto build_result;
   }
@@ -461,8 +550,8 @@ String *Item_func_convexhull::val_str(String *str_value)
   {
     /* We only have 2 nodes in the result, so we create a polyline. */
     if (res_receiver.start_shape(Gcalc_function::shape_line) ||
-        res_receiver.add_point(left_first->pi->x, left_first->pi->y) ||
-        res_receiver.add_point(left_cur->pi->x, left_cur->pi->y) ||
+        res_receiver.add_point(left_first->pi->node.shape.x, left_first->pi->node.shape.y) ||
+        res_receiver.add_point(left_cur->pi->node.shape.x, left_cur->pi->node.shape.y) ||
         res_receiver.complete_shape())
 
       goto mem_error;
@@ -475,7 +564,7 @@ String *Item_func_convexhull::val_str(String *str_value)
 
   while (left_first)
   {
-    if (res_receiver.add_point(left_first->pi->x, left_first->pi->y))
+    if (res_receiver.add_point(left_first->pi->node.shape.x, left_first->pi->node.shape.y))
       goto mem_error;
     left_first= left_first->get_next();
   }
@@ -485,7 +574,7 @@ String *Item_func_convexhull::val_str(String *str_value)
   right_cur= right_cur->prev;
   while (right_cur->prev)
   {
-    if (res_receiver.add_point(right_cur->pi->x, right_cur->pi->y))
+    if (res_receiver.add_point(right_cur->pi->node.shape.x, right_cur->pi->node.shape.y))
       goto mem_error;
     right_cur= right_cur->prev;
   }
@@ -983,11 +1072,11 @@ Item_func_spatial_rel::get_mm_leaf(RANGE_OPT_PARAM *param,
     tree->max_flag= NO_MAX_RANGE;
     break;
   case SP_WITHIN_FUNC:
-    tree->min_flag= GEOM_FLAG | HA_READ_MBR_WITHIN;// NEAR_MIN;//512;
+    tree->min_flag= GEOM_FLAG | HA_READ_MBR_CONTAIN;// NEAR_MIN;//512;
     tree->max_flag= NO_MAX_RANGE;
     break;
   case SP_CONTAINS_FUNC:
-    tree->min_flag= GEOM_FLAG | HA_READ_MBR_CONTAIN;// NEAR_MIN;//512;
+    tree->min_flag= GEOM_FLAG | HA_READ_MBR_WITHIN;// NEAR_MIN;//512;
     tree->max_flag= NO_MAX_RANGE;
     break;
   case SP_OVERLAPS_FUNC:
@@ -1105,10 +1194,10 @@ static double count_edge_t(const Gcalc_heap::Info *ea,
                            double &ex, double &ey, double &vx, double &vy,
                            double &e_sqrlen)
 {
-  ex= eb->x - ea->x;
-  ey= eb->y - ea->y;
-  vx= v->x - ea->x;
-  vy= v->y - ea->y;
+  ex= eb->node.shape.x - ea->node.shape.x;
+  ey= eb->node.shape.y - ea->node.shape.y;
+  vx= v->node.shape.x - ea->node.shape.x;
+  vy= v->node.shape.y - ea->node.shape.y;
   e_sqrlen= ex * ex + ey * ey;
   return (ex * vx + ey * vy) / e_sqrlen;
 }
@@ -1124,8 +1213,8 @@ static double distance_to_line(double ex, double ey, double vx, double vy,
 static double distance_points(const Gcalc_heap::Info *a,
                               const Gcalc_heap::Info *b)
 {
-  double x= a->x - b->x;
-  double y= a->y - b->y;
+  double x= a->node.shape.x - b->node.shape.x;
+  double y= a->node.shape.y - b->node.shape.y;
   return sqrt(x * x + y * y);
 }
 
@@ -2333,7 +2422,7 @@ double Item_func_distance::val_real()
       continue;
 
 count_distance:
-    if (cur_point->shape >= obj2_si)
+    if (cur_point->node.shape.shape >= obj2_si)
       continue;
     cur_point_edge= !cur_point->is_bottom();
 
@@ -2341,13 +2430,13 @@ count_distance:
     {
       /* We only check vertices of object 2 */
       if (dist_point->type != Gcalc_heap::nt_shape_node ||
-          dist_point->shape < obj2_si)
+          dist_point->node.shape.shape < obj2_si)
         continue;
 
       /* if we have an edge to check */
-      if (dist_point->left)
+      if (dist_point->node.shape.left)
       {
-        t= count_edge_t(dist_point, dist_point->left, cur_point,
+        t= count_edge_t(dist_point, dist_point->node.shape.left, cur_point,
                         ex, ey, vx, vy, e_sqrlen);
         if ((t>0.0) && (t<1.0))
         {
@@ -2358,7 +2447,7 @@ count_distance:
       }
       if (cur_point_edge)
       {
-        t= count_edge_t(cur_point, cur_point->left, dist_point,
+        t= count_edge_t(cur_point, cur_point->node.shape.left, dist_point,
                         ex, ey, vx, vy, e_sqrlen);
         if ((t>0.0) && (t<1.0))
         {

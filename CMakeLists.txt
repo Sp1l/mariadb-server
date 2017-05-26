@@ -1,5 +1,5 @@
-# Copyright (c) 2006, 2014, Oracle and/or its affiliates.
-# Copyright (c) 2008, 2014, Monty Program Ab
+# Copyright (c) 2006, 2017, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2017, MariaDB
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -30,6 +30,9 @@ IF(CMAKE_VERSION VERSION_EQUAL "3.0.0" OR
  CMAKE_POLICY(SET CMP0026 OLD)
  CMAKE_POLICY(SET CMP0045 OLD)
  CMAKE_POLICY(SET CMP0042 OLD)
+ENDIF()
+IF(POLICY CMP0054)
+  CMAKE_POLICY(SET CMP0054 NEW)
 ENDIF()
 
 MESSAGE(STATUS "Running cmake version ${CMAKE_VERSION}")
@@ -112,6 +115,11 @@ FOREACH(_base
   ENDIF()
 ENDFOREACH()
 
+FOREACH(tool gtar tar git)
+ STRING(TOUPPER ${tool}  TOOL)
+ FIND_PROGRAM(${TOOL}_EXECUTABLE ${tool} DOC "path to the executable")
+ MARK_AS_ADVANCED(${TOOL}_EXECUTABLE)
+ENDFOREACH()
 
 # Following autotools tradition, add preprocessor definitions
 # specified in environment variable CPPFLAGS
@@ -146,13 +154,13 @@ INCLUDE(ssl)
 INCLUDE(readline)
 INCLUDE(libutils)
 INCLUDE(dtrace)
-INCLUDE(jemalloc)
 INCLUDE(pcre)
 INCLUDE(ctest)
 INCLUDE(plugin)
 INCLUDE(install_macros)
 INCLUDE(systemd)
 INCLUDE(mysql_add_executable)
+INCLUDE(crc32-vpmsum)
 
 # Handle options
 OPTION(DISABLE_SHARED 
@@ -174,14 +182,18 @@ INCLUDE(check_compiler_flag)
 OPTION(WITH_ASAN "Enable address sanitizer" OFF)
 IF (WITH_ASAN)
   # gcc 4.8.1 and new versions of clang
-  MY_CHECK_AND_SET_COMPILER_FLAG("-fsanitize=address -O1 -Wno-error -fPIC"
+  MY_CHECK_AND_SET_COMPILER_FLAG("-fsanitize=address -fPIC"
     DEBUG RELWITHDEBINFO)
+  SET(HAVE_C_FSANITIZE ${have_C__fsanitize_address__fPIC})
+  SET(HAVE_CXX_FSANITIZE ${have_CXX__fsanitize_address__fPIC})
   IF(HAVE_C_FSANITIZE AND HAVE_CXX_FSANITIZE)
     SET(WITH_ASAN_OK 1)
   ELSE()
     # older versions of clang
-    MY_CHECK_AND_SET_COMPILER_FLAG("-faddress-sanitizer -O1 -fPIC"
+    MY_CHECK_AND_SET_COMPILER_FLAG("-faddress-sanitizer -fPIC"
       DEBUG RELWITHDEBINFO)
+    SET(HAVE_C_FADDRESS ${have_C__faddress_sanitizer__fPIC})
+    SET(HAVE_CXX_FADDRESS ${have_CXX__faddress_sanitizer__fPIC})
     IF(HAVE_C_FADDRESS AND HAVE_CXX_FADDRESS)
       SET(WITH_ASAN_OK 1)
     ENDIF()
@@ -208,11 +220,9 @@ IF(SECURITY_HARDENED)
   MY_CHECK_AND_SET_COMPILER_FLAG("-D_FORTIFY_SOURCE=2" RELEASE RELWITHDEBINFO)
 ENDIF()
 
-OPTION(ENABLE_DEBUG_SYNC "Enable debug sync (debug builds only)" ON) 
-IF(ENABLE_DEBUG_SYNC) 
-  SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DENABLED_DEBUG_SYNC") 
-  SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DENABLED_DEBUG_SYNC") 
-ENDIF() 
+# Always enable debug sync for debug builds.
+SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DENABLED_DEBUG_SYNC")
+SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DENABLED_DEBUG_SYNC")
  
 OPTION(ENABLE_GCOV "Enable gcov (debug, Linux builds only)" OFF)
 IF (ENABLE_GCOV)
@@ -261,7 +271,7 @@ ENDIF()
 
 # Set commonly used variables
 IF(WIN32)
-  SET(DEFAULT_MYSQL_HOME "C:/MariaDB${MYSQL_BASE_VERSION}")
+  SET(DEFAULT_MYSQL_HOME "C:/Program Files/MariaDB ${MYSQL_BASE_VERSION}")
   SET(SHAREDIR share)
 ELSE()
   SET(DEFAULT_MYSQL_HOME ${CMAKE_INSTALL_PREFIX})
@@ -300,12 +310,15 @@ IF(NOT HAVE_CXX_NEW)
 ENDIF()
 
 # Find header files from the bundled libraries
-# (jemalloc, yassl, readline, pcre, etc)
+# (yassl, readline, pcre, etc)
 # before the ones installed in the system
 SET(CMAKE_INCLUDE_DIRECTORIES_PROJECT_BEFORE ON)
 
 # Common defines and includes
 ADD_DEFINITIONS(-DHAVE_CONFIG_H)
+IF(_FILE_OFFSET_BITS)
+  ADD_DEFINITIONS(-D_FILE_OFFSET_BITS=${_FILE_OFFSET_BITS})
+ENDIF()
 INCLUDE_DIRECTORIES(${CMAKE_CURRENT_BINARY_DIR}/include)
 
 # Add bundled or system zlib.
@@ -316,7 +329,6 @@ MYSQL_CHECK_SSL()
 MYSQL_CHECK_READLINE()
 
 SET(MALLOC_LIBRARY "system")
-CHECK_JEMALLOC()
 
 CHECK_PCRE()
 
@@ -343,16 +355,19 @@ IF(WITH_UNIT_TESTS)
  ADD_SUBDIRECTORY(unittest/examples)
  ADD_SUBDIRECTORY(unittest/mysys)
  ADD_SUBDIRECTORY(unittest/my_decimal)
+ ADD_SUBDIRECTORY(unittest/json_lib)
  IF(NOT WITHOUT_SERVER)
    ADD_SUBDIRECTORY(unittest/sql)
  ENDIF()
 ENDIF()
 
-IF(NOT WITHOUT_SERVER)
- SET (MYSQLD_STATIC_PLUGIN_LIBS "" CACHE INTERNAL "")
- # Add storage engines and plugins.
- CONFIGURE_PLUGINS()
-ENDIF()
+SET (MYSQLD_STATIC_PLUGIN_LIBS "" CACHE INTERNAL "")
+
+# mariadb_connector_c fetches submodules which is useful for plugins
+INCLUDE(mariadb_connector_c) # this does ADD_SUBDIRECTORY(libmariadb)
+
+# Add storage engines and plugins.
+CONFIGURE_PLUGINS()
 
 ADD_SUBDIRECTORY(include)
 ADD_SUBDIRECTORY(dbug)
@@ -360,7 +375,6 @@ ADD_SUBDIRECTORY(strings)
 ADD_SUBDIRECTORY(vio)
 ADD_SUBDIRECTORY(mysys)
 ADD_SUBDIRECTORY(mysys_ssl)
-ADD_SUBDIRECTORY(libmysql)
 ADD_SUBDIRECTORY(client)
 ADD_SUBDIRECTORY(extra)
 ADD_SUBDIRECTORY(libservices)
@@ -382,6 +396,10 @@ IF(NOT WITHOUT_SERVER)
   ADD_SUBDIRECTORY(mysql-test)
   ADD_SUBDIRECTORY(mysql-test/lib/My/SafeProcess)
   ADD_SUBDIRECTORY(sql-bench)
+  IF(WIN32)
+    ADD_SUBDIRECTORY(win/upgrade_wizard)
+    ADD_SUBDIRECTORY(win/packaging)
+  ENDIF()
 ENDIF()
 
 IF(UNIX)
@@ -391,10 +409,7 @@ ENDIF()
 INCLUDE(cmake/abi_check.cmake)
 INCLUDE(cmake/tags.cmake)
 
-IF(WIN32)
-  ADD_SUBDIRECTORY(win/upgrade_wizard)
-  ADD_SUBDIRECTORY(win/packaging)
-ENDIF()
+
 
 
 INCLUDE(for_clients)
@@ -421,12 +436,6 @@ CONFIGURE_FILE(
     ${CMAKE_SOURCE_DIR}/cmake/info_macros.cmake.in
     ${CMAKE_BINARY_DIR}/info_macros.cmake @ONLY)
 
-IF(DEB)
-  CONFIGURE_FILE(
-    ${CMAKE_SOURCE_DIR}/debian/mariadb-server-10.2.files.in
-    ${CMAKE_SOURCE_DIR}/debian/mariadb-server-10.2.files)
-ENDIF(DEB)
-
 # Handle the "INFO_*" files.
 INCLUDE(${CMAKE_BINARY_DIR}/info_macros.cmake)
 # Source: This can be done during the cmake phase, all information is
@@ -443,8 +452,9 @@ ADD_CUSTOM_TARGET(INFO_BIN ALL
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-INSTALL_DOCUMENTATION(README CREDITS COPYING COPYING.LESSER COPYING.thirdparty
+INSTALL_DOCUMENTATION(README.md CREDITS COPYING COPYING.thirdparty
                       EXCEPTIONS-CLIENT COMPONENT Readme)
+
 # MDEV-6526 these files are not installed anymore
 #INSTALL_DOCUMENTATION(${CMAKE_BINARY_DIR}/Docs/INFO_SRC
 #                      ${CMAKE_BINARY_DIR}/Docs/INFO_BIN)

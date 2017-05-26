@@ -19,6 +19,7 @@
 
 #include "log_event.h" // class THD, EVENT_LEN_OFFSET, etc.
 #include "wsrep_applier.h"
+#include "debug_sync.h"
 
 /*
   read the first event from (*buf). The size of the (*buf) is (*buf_len).
@@ -38,15 +39,9 @@ static Log_event* wsrep_read_log_event(
   const char *error= 0;
   Log_event *res=  0;
 
-  if (data_len > wsrep_max_ws_size)
-  {
-    error = "Event too big";
-    goto err;
-  }
+  res= Log_event::read_log_event(buf, data_len, &error, description_event,
+                                 true);
 
-  res= Log_event::read_log_event(buf, data_len, &error, description_event, true);
-
-err:
   if (!res)
   {
     DBUG_ASSERT(error != 0);
@@ -61,7 +56,6 @@ err:
 
 #include "transaction.h" // trans_commit(), trans_rollback()
 #include "rpl_rli.h"     // class Relay_log_info;
-#include "sql_base.h"    // close_temporary_table()
 
 void wsrep_set_apply_format(THD* thd, Format_description_log_event* ev)
 {
@@ -78,6 +72,9 @@ Format_description_log_event* wsrep_get_apply_format(THD* thd)
   {
     return (Format_description_log_event*) thd->wsrep_apply_format;
   }
+
+  DBUG_ASSERT(thd->wsrep_rgi);
+
   return thd->wsrep_rgi->rli->relay_log.description_event_for_exec;
 }
 
@@ -220,6 +217,16 @@ wsrep_cb_status_t wsrep_apply_cb(void* const             ctx,
 {
   THD* const thd((THD*)ctx);
 
+  // Allow tests to block the applier thread using the DBUG facilities.
+  DBUG_EXECUTE_IF("sync.wsrep_apply_cb",
+                 {
+                   const char act[]=
+                     "now "
+                     "wait_for signal.wsrep_apply_cb";
+                   DBUG_ASSERT(!debug_sync_set_action(thd,
+                                                      STRING_WITH_LEN(act)));
+                 };);
+
   thd->wsrep_trx_meta = *meta;
 
 #ifdef WSREP_PROC_INFO
@@ -241,6 +248,9 @@ wsrep_cb_status_t wsrep_apply_cb(void* const             ctx,
     thd->variables.option_bits|= OPTION_NO_FOREIGN_KEY_CHECKS;
   else
     thd->variables.option_bits&= ~OPTION_NO_FOREIGN_KEY_CHECKS;
+
+  /* With galera we assume that the master has done the constraint checks */
+  thd->variables.option_bits|= OPTION_NO_CHECK_CONSTRAINT_CHECKS;
 
   if (flags & WSREP_FLAG_ISOLATION)
   {
@@ -266,21 +276,17 @@ wsrep_cb_status_t wsrep_apply_cb(void* const             ctx,
     wsrep_dump_rbr_buf_with_header(thd, buf, buf_len);
   }
 
-  TABLE *tmp;
-  while ((tmp = thd->temporary_tables))
+  if (thd->has_thd_temporary_tables())
   {
-    WSREP_DEBUG("Applier %lu, has temporary tables: %s.%s",
-		thd->thread_id,
-		(tmp->s) ? tmp->s->db.str : "void",
-		(tmp->s) ? tmp->s->table_name.str : "void");
-    close_temporary_table(thd, tmp, 1, 1);
+    WSREP_DEBUG("Applier %lld has temporary tables. Closing them now..",
+                thd->thread_id);
+    thd->close_temporary_tables();
   }
 
   return rcode;
 }
 
-static wsrep_cb_status_t wsrep_commit(THD* const thd,
-                                      wsrep_seqno_t const global_seqno)
+static wsrep_cb_status_t wsrep_commit(THD* const thd)
 {
 #ifdef WSREP_PROC_INFO
   snprintf(thd->wsrep_info, sizeof(thd->wsrep_info) - 1,
@@ -299,7 +305,11 @@ static wsrep_cb_status_t wsrep_commit(THD* const thd,
 #ifdef GTID_SUPPORT
     thd->variables.gtid_next.set_automatic();
 #endif /* GTID_SUPPORT */
-    // TODO: mark snapshot with global_seqno.
+    if (thd->wsrep_apply_toi)
+    {
+      wsrep_set_SE_checkpoint(thd->wsrep_trx_meta.gtid.uuid,
+                              thd->wsrep_trx_meta.gtid.seqno);
+    }
   }
 
 #ifdef WSREP_PROC_INFO
@@ -313,8 +323,7 @@ static wsrep_cb_status_t wsrep_commit(THD* const thd,
   return rcode;
 }
 
-static wsrep_cb_status_t wsrep_rollback(THD* const thd,
-                                        wsrep_seqno_t const global_seqno)
+static wsrep_cb_status_t wsrep_rollback(THD* const thd)
 {
 #ifdef WSREP_PROC_INFO
   snprintf(thd->wsrep_info, sizeof(thd->wsrep_info) - 1,
@@ -351,12 +360,14 @@ wsrep_cb_status_t wsrep_commit_cb(void*         const     ctx,
   wsrep_cb_status_t rcode;
 
   if (commit)
-    rcode = wsrep_commit(thd, meta->gtid.seqno);
+    rcode = wsrep_commit(thd);
   else
-    rcode = wsrep_rollback(thd, meta->gtid.seqno);
+    rcode = wsrep_rollback(thd);
 
+  /* Cleanup */
   wsrep_set_apply_format(thd, NULL);
   thd->mdl_context.release_transactional_locks();
+  thd->reset_query();                           /* Mutex protected */
   free_root(thd->mem_root,MYF(MY_KEEP_PREALLOC));
   thd->tx_isolation= (enum_tx_isolation) thd->variables.tx_isolation;
 

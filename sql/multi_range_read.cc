@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #include "sql_parse.h"
 #include <my_bit.h>
@@ -261,7 +261,7 @@ int handler::multi_range_read_next(range_id_t *range_info)
     }
     else
     {
-      if (was_semi_consistent_read())
+      if (ha_was_semi_consistent_read())
       {
         /*
           The following assignment is redundant, but for extra safety and to

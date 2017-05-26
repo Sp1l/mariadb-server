@@ -44,11 +44,10 @@ FUNCTION (INSTALL_DEBUG_SYMBOLS)
     ENDIF()
 	
     set(comp "")
-    IF(ARG_COMPONENT STREQUAL "Server")
-      IF(target MATCHES "mysqld" OR type MATCHES "MODULE")
-        #MESSAGE("PDB: ${targets}")
-        SET(comp Server)
-      ENDIF()
+   
+    IF(target MATCHES "mysqld" OR type MATCHES "MODULE")
+      #MESSAGE("PDB: ${targets}")
+      SET(comp Server)
     ENDIF()
  
     IF(NOT comp MATCHES Server)
@@ -203,6 +202,7 @@ IF(WIN32)
     FIND_PROGRAM(SIGNTOOL_EXECUTABLE signtool 
       PATHS "$ENV{ProgramFiles}/Microsoft SDKs/Windows/v7.0A/bin"
       "$ENV{ProgramFiles}/Windows Kits/8.0/bin/x86"
+      "$ENV{ProgramFiles}/Windows Kits/8.1/bin/x86"
     )
     IF(NOT SIGNTOOL_EXECUTABLE)
       MESSAGE(FATAL_ERROR 

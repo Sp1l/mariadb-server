@@ -56,7 +56,7 @@ IF(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # MySQL "canonical" GCC flags. At least -fno-rtti flag affects
   # ABI and cannot be simply removed. 
   SET(CMAKE_CXX_FLAGS 
-    "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
+    "${CMAKE_CXX_FLAGS} -fno-rtti")
 
   IF (CMAKE_EXE_LINKER_FLAGS MATCHES " -static " 
      OR CMAKE_EXE_LINKER_FLAGS MATCHES " -static$")
@@ -196,6 +196,7 @@ CHECK_INCLUDE_FILES (ndir.h HAVE_NDIR_H)
 CHECK_INCLUDE_FILES (netinet/in.h HAVE_NETINET_IN_H)
 CHECK_INCLUDE_FILES (paths.h HAVE_PATHS_H)
 CHECK_INCLUDE_FILES (poll.h HAVE_POLL_H)
+CHECK_INCLUDE_FILES (sys/poll.h HAVE_SYS_POLL_H)
 CHECK_INCLUDE_FILES (pwd.h HAVE_PWD_H)
 CHECK_INCLUDE_FILES (sched.h HAVE_SCHED_H)
 CHECK_INCLUDE_FILES (select.h HAVE_SELECT_H)
@@ -224,7 +225,6 @@ CHECK_INCLUDE_FILES (sys/socket.h HAVE_SYS_SOCKET_H)
 CHECK_INCLUDE_FILES (sys/stat.h HAVE_SYS_STAT_H)
 CHECK_INCLUDE_FILES (sys/stream.h HAVE_SYS_STREAM_H)
 CHECK_INCLUDE_FILES (sys/syscall.h HAVE_SYS_SYSCALL_H)
-CHECK_INCLUDE_FILES ("curses.h;term.h" HAVE_TERM_H)
 CHECK_INCLUDE_FILES (asm/termbits.h HAVE_ASM_TERMBITS_H)
 CHECK_INCLUDE_FILES (termbits.h HAVE_TERMBITS_H)
 CHECK_INCLUDE_FILES (termios.h HAVE_TERMIOS_H)
@@ -727,16 +727,36 @@ ENDIF()
 #
 # Test for how the C compiler does inline, if at all
 #
+# SunPro is weird, apparently it only supports inline at -xO3 or -xO4.
+# And if CMAKE_C_FLAGS has -xO4 but CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE} has -xO2
+# then CHECK_C_SOURCE_COMPILES will succeed but the built will fail.
+# We must test all flags here.
+# XXX actually, we can do this for all compilers, not only SunPro
+IF (CMAKE_CXX_COMPILER_ID MATCHES "SunPro" AND
+    CMAKE_GENERATOR MATCHES "Makefiles")
+  STRING(TOUPPER "CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}" flags)
+  SET(CMAKE_REQUIRED_FLAGS "${${flags}}")
+ENDIF()
 CHECK_C_SOURCE_COMPILES("
-static inline int foo(){return 0;}
+extern int bar(int x);
+static inline int foo(){return bar(1);}
 int main(int argc, char *argv[]){return 0;}"
                             C_HAS_inline)
 IF(NOT C_HAS_inline)
   CHECK_C_SOURCE_COMPILES("
-  static __inline int foo(){return 0;}
+  extern int bar(int x);
+  static __inline int foo(){return bar(1);}
   int main(int argc, char *argv[]){return 0;}"
                             C_HAS___inline)
-  SET(C_INLINE __inline)
+  IF(C_HAS___inline)
+    SET(C_INLINE __inline)
+  ElSE()
+    SET(C_INLINE)
+    MESSAGE(WARNING "C compiler does not support funcion inlining")
+    IF(NOT NOINLINE)
+      MESSAGE(FATAL_ERROR "Use -DNOINLINE=TRUE to allow compilation without inlining")
+    ENDIF()
+  ENDIF()
 ENDIF()
 
 IF(NOT CMAKE_CROSSCOMPILING AND NOT MSVC)
@@ -762,6 +782,17 @@ IF(NOT CMAKE_CROSSCOMPILING AND NOT MSVC)
      return 0;
     }
    " HAVE_FAKE_PAUSE_INSTRUCTION)
+  ENDIF()
+  IF (NOT HAVE_PAUSE_INSTRUCTION)
+    CHECK_C_SOURCE_COMPILES("
+    #include <sys/platform/ppc.h>
+    int main()
+    {
+     __ppc_set_ppr_low();
+     __ppc_set_ppr_med();
+     return 0;
+    }
+    " HAVE_HMT_PRIORITY_INSTRUCTION)
   ENDIF()
 ENDIF()
   
@@ -977,11 +1008,16 @@ CHECK_STRUCT_HAS_MEMBER("struct sockaddr_in6" sin6_len
 
 SET(CMAKE_EXTRA_INCLUDE_FILES) 
 
+CHECK_INCLUDE_FILE(ucontext.h HAVE_UCONTEXT_H)
+IF(NOT HAVE_UCONTEXT_H)
+  CHECK_INCLUDE_FILE(sys/ucontext.h HAVE_UCONTEXT_H)
+ENDIF()
+
 CHECK_STRUCT_HAS_MEMBER("struct timespec" tv_sec "time.h" STRUCT_TIMESPEC_HAS_TV_SEC)
 CHECK_STRUCT_HAS_MEMBER("struct timespec" tv_nsec "time.h" STRUCT_TIMESPEC_HAS_TV_NSEC)
 
 IF(NOT MSVC)
-  CHECK_C_SOURCE_RUNS(
+  CHECK_C_SOURCE_COMPILES(
   "
   #define _GNU_SOURCE
   #include <fcntl.h>
@@ -997,4 +1033,3 @@ IF(NOT MSVC)
   HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE
   )
 ENDIF()
-

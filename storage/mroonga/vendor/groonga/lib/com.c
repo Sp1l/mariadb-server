@@ -348,7 +348,7 @@ grn_com_event_add(grn_ctx *ctx, grn_com_event *ev, grn_sock fd, int events, grn_
     struct epoll_event e;
     memset(&e, 0, sizeof(struct epoll_event));
     e.data.fd = (fd);
-    e.events = (__uint32_t) events;
+    e.events = (uint32_t) events;
     if (epoll_ctl(ev->epfd, EPOLL_CTL_ADD, (fd), &e) == -1) {
       SERR("epoll_ctl");
       return ctx->rc;
@@ -396,7 +396,7 @@ grn_com_event_mod(grn_ctx *ctx, grn_com_event *ev, grn_sock fd, int events, grn_
       struct epoll_event e;
       memset(&e, 0, sizeof(struct epoll_event));
       e.data.fd = (fd);
-      e.events = (__uint32_t) events;
+      e.events = (uint32_t) events;
       if (epoll_ctl(ev->epfd, EPOLL_CTL_MOD, (fd), &e) == -1) {
         SERR("epoll_ctl");
         return ctx->rc;
@@ -738,7 +738,7 @@ grn_com_send(grn_ctx *ctx, grn_com *cs,
     msg.msg_namelen = 0;
     msg.msg_iov = msg_iov;
     msg.msg_iovlen = 2;
-    msg_iov[0].iov_base = header;
+    msg_iov[0].iov_base = (char*) header;
     msg_iov[0].iov_len = sizeof(grn_com_header);
     msg_iov[1].iov_base = (char *)body;
     msg_iov[1].iov_len = size;

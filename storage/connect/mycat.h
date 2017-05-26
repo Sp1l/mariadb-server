@@ -11,7 +11,7 @@
 
   You should have received a copy of the GNU General Public License
   along with this program; if not, write to the Free Software
-  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 /**************** MYCAT H Declares Source Code File (.H) ***************/
 /*  Name: MYCAT.H  Version 2.3                                         */
@@ -62,6 +62,7 @@ struct ha_table_option_struct {
   bool split;
   bool readonly;
   bool sepindex;
+	bool zipped;
   };
 
 // Possible value for catalog functions
@@ -97,18 +98,15 @@ class MYCAT : public CATALOG {
 
   // Methods
   void    Reset(void);
-//void    SetDataPath(PGLOBAL g, const char *path) 
-//            {SetPath(g, &DataPath, path);}
   bool    StoreIndex(PGLOBAL, PTABDEF) {return false;}  // Temporary
-  PRELDEF GetTableDesc(PGLOBAL g, LPCSTR name,
-                                  LPCSTR type, PRELDEF *prp = NULL);
+	PRELDEF GetTableDesc(PGLOBAL g, PTABLE tablep,
+		                   LPCSTR type, PRELDEF *prp = NULL);
   PTDB    GetTable(PGLOBAL g, PTABLE tablep, 
                               MODE mode = MODE_READ, LPCSTR type = NULL);
   void    ClearDB(PGLOBAL g);
 
  protected:
-  PRELDEF MakeTableDesc(PGLOBAL g, LPCSTR name, LPCSTR am);
-//void    SetPath(PGLOBAL g, LPCSTR *datapath, const char *path);
+	PRELDEF MakeTableDesc(PGLOBAL g, PTABLE tablep, LPCSTR am);
 
   // Members
   ha_connect *Hc;                          // The Connect handler

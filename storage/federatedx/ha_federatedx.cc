@@ -337,7 +337,6 @@ static const int bulk_padding= 64;              // bytes "overhead" in packet
 
 /* Variables used when chopping off trailing characters */
 static const uint sizeof_trailing_comma= sizeof(", ") - 1;
-static const uint sizeof_trailing_closeparen= sizeof(") ") - 1;
 static const uint sizeof_trailing_and= sizeof(" AND ") - 1;
 static const uint sizeof_trailing_where= sizeof(" WHERE ") - 1;
 
@@ -500,8 +499,7 @@ bool append_ident(String *string, const char *name, uint length,
     for (name_end= name+length; name < name_end; name+= clen)
     {
       uchar c= *(uchar *) name;
-      if (!(clen= my_mbcharlen(system_charset_info, c)))
-        clen= 1;
+      clen= my_charlen_fix(system_charset_info, name, name_end);
       if (clen == 1 && c == (uchar) quote_char &&
           (result= string->append(&quote_char, 1, system_charset_info)))
         goto err;
@@ -1319,7 +1317,7 @@ bool ha_federatedx::create_where_from_key(String *to,
           break;
         }
         DBUG_PRINT("info", ("federatedx HA_READ_AFTER_KEY %d", i));
-        if (store_length >= length) /* end key */
+        if (store_length >= length || i > 0) /* end key */
         {
           if (emit_key_part_name(&tmp, key_part))
             goto err;
@@ -1788,7 +1786,7 @@ public:
 
 public:
   bool handle_condition(THD *thd, uint sql_errno, const char* sqlstate,
-                        Sql_condition::enum_warning_level level,
+                        Sql_condition::enum_warning_level *level,
                         const char* msg, Sql_condition ** cond_hdl)
   {
     return sql_errno >= ER_ABORTING_CONNECTION &&
@@ -2157,7 +2155,7 @@ void ha_federatedx::start_bulk_insert(ha_rows rows, uint flags)
   
   @return Operation status
   @retval       0       No error
-  @retval       != 0    Error occured at remote server. Also sets my_errno.
+  @retval       != 0    Error occurred at remote server. Also sets my_errno.
 */
 
 int ha_federatedx::end_bulk_insert()

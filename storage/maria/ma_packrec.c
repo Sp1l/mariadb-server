@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 	/* Functions to compressed records */
 
@@ -1204,7 +1204,7 @@ static void decode_bytes(MARIA_COLUMNDEF *rec,MARIA_BIT_BUFF *bit_buff,
       /* This means that the Huffman code must be longer than table_bits. */
       pos=decode_tree->table+low_byte;
       bits-=table_bits;
-      /* NOTE: decode_bytes_test_bit() is a macro wich contains a break !!! */
+      /* NOTE: decode_bytes_test_bit() is a macro which contains a break !!! */
       for (;;)
       {
 	low_byte=(uint) (bit_buff->current_byte >> (bits-8));
@@ -1445,7 +1445,7 @@ uint _ma_pack_get_block_info(MARIA_HA *maria, MARIA_BIT_BUFF *bit_buff,
     maria->blob_length=info->blob_len;
   }
   info->filepos=filepos+head_length;
-  if (file > 0)
+  if (file >= 0)
   {
     info->offset=MY_MIN(info->rec_len, ref_length - head_length);
     memcpy(*rec_buff_p, header + head_length, info->offset);

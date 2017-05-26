@@ -151,7 +151,7 @@ void
 btr_defragment_init()
 {
 	srv_defragment_interval = ut_microseconds_to_timer(
-		1000000.0 / srv_defragment_frequency);
+		(ulonglong) (1000000.0 / srv_defragment_frequency));
 	mutex_create(btr_defragment_mutex_key, &btr_defragment_mutex,
 		     SYNC_ANY_LATCH);
 	os_thread_create(btr_defragment_thread, NULL, NULL);
@@ -227,13 +227,13 @@ btr_defragment_add_index(
 		page = buf_block_get_frame(block);
 	}
 
-	if (page == NULL && index->table->is_encrypted) {
+	if (page == NULL && index->table->file_unreadable) {
 		mtr_commit(&mtr);
 		*err = DB_DECRYPTION_FAILED;
 		return NULL;
 	}
 
-	if (btr_page_get_level(page, &mtr) == 0) {
+	if (page_is_leaf(page)) {
 		// Index root is a leaf page, no need to defragment.
 		mtr_commit(&mtr);
 		return NULL;

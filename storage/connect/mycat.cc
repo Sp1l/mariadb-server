@@ -1,4 +1,4 @@
-/* Copyright (C) Olivier Bertrand 2004 - 2015
+/* Copyright (C) Olivier Bertrand 2004 - 2017
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -11,14 +11,14 @@
 
   You should have received a copy of the GNU General Public License
   along with this program; if not, write to the Free Software
-  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 /*************** Mycat CC Program Source Code File (.CC) ***************/
 /* PROGRAM NAME: MYCAT                                                 */
 /* -------------                                                       */
-/*  Version 1.4                                                        */
+/*  Version 1.6                                                        */
 /*                                                                     */
-/*  Author: Olivier Bertrand                       2012 - 2015         */
+/*  Author: Olivier Bertrand                       2012 - 2017         */
 /*                                                                     */
 /* WHAT THIS PROGRAM DOES:                                             */
 /* -----------------------                                             */
@@ -58,13 +58,16 @@
 #endif   // UNIX
 #include "global.h"
 #include "plgdbsem.h"
-#include "reldef.h"
-#include "tabcol.h"
+//#include "reldef.h"
 #include "xtable.h"
+#include "tabext.h"
+#include "tabcol.h"
 #include "filamtxt.h"
 #include "tabdos.h"
 #include "tabfmt.h"
+#if defined(VCT_SUPPORT)
 #include "tabvct.h"
+#endif   // VCT_SUPPORT
 #include "tabsys.h"
 #if defined(__WIN__)
 #include "tabmac.h"
@@ -80,6 +83,10 @@
 #define NODBC
 #include "tabodbc.h"
 #endif   // ODBC_SUPPORT
+#if defined(JDBC_SUPPORT)
+#define NJDBC
+#include "tabjdbc.h"
+#endif   // ODBC_SUPPORT
 #if defined(PIVOT_SUPPORT)
 #include "tabpivot.h"
 #endif   // PIVOT_SUPPORT
@@ -89,6 +96,9 @@
 #if defined(XML_SUPPORT)
 #include "tabxml.h"
 #endif   // XML_SUPPORT
+#if defined(ZIP_SUPPORT)
+#include "tabzip.h"
+#endif   // ZIP_SUPPORT
 #include "mycat.h"
 
 /***********************************************************************/
@@ -105,19 +115,7 @@ PQRYRES OEMColumns(PGLOBAL g, PTOS topt, char *tab, char *db, bool info);
 /***********************************************************************/
 char *GetPluginDir(void)
 {
-  char *plugin_dir;
-
-#if defined(_WIN64)
-  plugin_dir = (char *)GetProcAddress(GetModuleHandle(NULL),
-    "?opt_plugin_dir@@3PADEA");
-#elif defined(_WIN32)
-  plugin_dir = (char*)GetProcAddress(GetModuleHandle(NULL),
-    "?opt_plugin_dir@@3PADA");
-#else
-  plugin_dir = opt_plugin_dir;
-#endif
-
-  return plugin_dir;
+  return opt_plugin_dir;
 } // end of GetPluginDir
 
 /***********************************************************************/
@@ -140,7 +138,10 @@ TABTYPE GetTypeID(const char *type)
 #ifdef ODBC_SUPPORT
                  : (!stricmp(type, "ODBC"))  ? TAB_ODBC
 #endif
-                 : (!stricmp(type, "MYSQL")) ? TAB_MYSQL
+#ifdef JDBC_SUPPORT
+								 : (!stricmp(type, "JDBC"))  ? TAB_JDBC
+#endif
+								 : (!stricmp(type, "MYSQL")) ? TAB_MYSQL
                  : (!stricmp(type, "MYPRX")) ? TAB_MYSQL
                  : (!stricmp(type, "DIR"))   ? TAB_DIR
 #ifdef __WIN__
@@ -157,7 +158,10 @@ TABTYPE GetTypeID(const char *type)
 #endif
                  : (!stricmp(type, "VIR"))   ? TAB_VIR
                  : (!stricmp(type, "JSON"))  ? TAB_JSON
-                 : (!stricmp(type, "OEM"))   ? TAB_OEM : TAB_NIY;
+#ifdef ZIP_SUPPORT
+								 : (!stricmp(type, "ZIP"))   ? TAB_ZIP
+#endif
+		             : (!stricmp(type, "OEM"))   ? TAB_OEM : TAB_NIY;
   } // end of GetTypeID
 
 /***********************************************************************/
@@ -178,6 +182,7 @@ bool IsFileType(TABTYPE type)
     case TAB_INI:
     case TAB_VEC:
     case TAB_JSON:
+//	case TAB_ZIP:
       isfile= true;
       break;
     default:
@@ -301,12 +306,12 @@ int GetIndexType(TABTYPE type)
       break;
     case TAB_MYSQL:
     case TAB_ODBC:
-      xtyp= 2;
+		case TAB_JDBC:
+			xtyp= 2;
       break;
     case TAB_VIR:
       xtyp= 3;
       break;
-//  case TAB_ODBC:
     default:
       xtyp= 0;
       break;
@@ -472,67 +477,37 @@ void MYCAT::Reset(void)
   {
   } // end of Reset
 
-#if 0
-/***********************************************************************/
-/*  This function sets the current database path.                      */
-/***********************************************************************/
-void MYCAT::SetPath(PGLOBAL g, LPCSTR *datapath, const char *path)
-	{
-	if (path) {
-		size_t len= strlen(path) + (*path != '.' ? 4 : 1);
-		char  *buf= (char*)PlugSubAlloc(g, NULL, len);
-		
-		if (PlugIsAbsolutePath(path))
-		{
-		  strcpy(buf, path);
-		  *datapath= buf;
-		  return;
-		}
-
-		if (*path != '.') {
-#if defined(__WIN__)
-			char *s= "\\";
-#else   // !__WIN__
-			char *s= "/";
-#endif  // !__WIN__
-			strcat(strcat(strcat(strcpy(buf, "."), s), path), s);
-		} else
-			strcpy(buf, path);
-
-		*datapath= buf;
-		} // endif path
-
-	} // end of SetDataPath
-#endif // 0
-
 /***********************************************************************/
 /*  GetTableDesc: retrieve a table descriptor.                         */
 /*  Look for a table descriptor matching the name and type.            */
 /***********************************************************************/
-PRELDEF MYCAT::GetTableDesc(PGLOBAL g, LPCSTR name,
+PRELDEF MYCAT::GetTableDesc(PGLOBAL g, PTABLE tablep,
                                        LPCSTR type, PRELDEF *)
   {
 	if (trace)
-		printf("GetTableDesc: name=%s am=%s\n", name, SVP(type));
+		printf("GetTableDesc: name=%s am=%s\n", tablep->GetName(), SVP(type));
 
  	// If not specified get the type of this table
   if (!type)
     type= Hc->GetStringOption("Type","*");
 
-  return MakeTableDesc(g, name, type);
+  return MakeTableDesc(g, tablep, type);
   } // end of GetTableDesc
 
 /***********************************************************************/
 /*  MakeTableDesc: make a table/view description.                      */
 /*  Note: caller must check if name already exists before calling it.  */
 /***********************************************************************/
-PRELDEF MYCAT::MakeTableDesc(PGLOBAL g, LPCSTR name, LPCSTR am)
+PRELDEF MYCAT::MakeTableDesc(PGLOBAL g, PTABLE tablep, LPCSTR am)
   {
   TABTYPE tc;
+	LPCSTR  name = (PSZ)PlugDup(g, tablep->GetName());
+	LPCSTR  schema = (PSZ)PlugDup(g, tablep->GetSchema());
   PRELDEF tdp= NULL;
 
 	if (trace)
-		printf("MakeTableDesc: name=%s am=%s\n", name, SVP(am));
+		printf("MakeTableDesc: name=%s schema=%s am=%s\n",
+		                       name, SVP(schema), SVP(am));
 
   /*********************************************************************/
   /*  Get a unique enum identifier for types.                          */
@@ -551,10 +526,15 @@ PRELDEF MYCAT::MakeTableDesc(PGLOBAL g, LPCSTR name, LPCSTR am)
 #if defined(XML_SUPPORT)
     case TAB_XML: tdp= new(g) XMLDEF;   break;
 #endif   // XML_SUPPORT
-    case TAB_VEC: tdp= new(g) VCTDEF;   break;
+#if defined(VCT_SUPPORT)
+		case TAB_VEC: tdp = new(g) VCTDEF;  break;
+#endif   // VCT_SUPPORT
 #if defined(ODBC_SUPPORT)
     case TAB_ODBC: tdp= new(g) ODBCDEF; break;
 #endif   // ODBC_SUPPORT
+#if defined(JDBC_SUPPORT)
+		case TAB_JDBC: tdp= new(g) JDBCDEF; break;
+#endif   // JDBC_SUPPORT
 #if defined(__WIN__)
     case TAB_MAC: tdp= new(g) MACDEF;   break;
     case TAB_WMI: tdp= new(g) WMIDEF;   break;
@@ -570,12 +550,15 @@ PRELDEF MYCAT::MakeTableDesc(PGLOBAL g, LPCSTR name, LPCSTR am)
 #endif   // PIVOT_SUPPORT
     case TAB_VIR: tdp= new(g) VIRDEF;   break;
     case TAB_JSON: tdp= new(g) JSONDEF; break;
-    default:
-      sprintf(g->Message, MSG(BAD_TABLE_TYPE), am, name);
+#if defined(ZIP_SUPPORT)
+		case TAB_ZIP: tdp= new(g) ZIPDEF;   break;
+#endif   // ZIP_SUPPORT
+		default:
+			sprintf(g->Message, MSG(BAD_TABLE_TYPE), am, name);
     } // endswitch
 
   // Do make the table/view definition
-  if (tdp && tdp->Define(g, this, name, am))
+  if (tdp && tdp->Define(g, this, name, schema, am))
     tdp= NULL;
 
   return tdp;
@@ -588,20 +571,20 @@ PTDB MYCAT::GetTable(PGLOBAL g, PTABLE tablep, MODE mode, LPCSTR type)
   {
   PRELDEF tdp;
   PTDB    tdbp= NULL;
-  LPCSTR  name= tablep->GetName();
+//  LPCSTR  name= tablep->GetName();
 
 	if (trace)
-		printf("GetTableDB: name=%s\n", name);
+		printf("GetTableDB: name=%s\n", tablep->GetName());
 
   // Look for the description of the requested table
-  tdp= GetTableDesc(g, name, type);
+  tdp= GetTableDesc(g, tablep, type);
 
   if (tdp) {
 		if (trace)
 			printf("tdb=%p type=%s\n", tdp, tdp->GetType());
 
-		if (tablep->GetQualifier())
-			tdp->Database = SetPath(g, tablep->GetQualifier());
+		if (tablep->GetSchema())
+			tdp->Database = SetPath(g, tablep->GetSchema());
 		
     tdbp= tdp->GetTable(g, mode);
 		} // endif tdp

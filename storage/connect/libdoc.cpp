@@ -1,6 +1,6 @@
 /******************************************************************/
 /*  Implementation of XML document processing using libxml2       */
-/*  Author: Olivier Bertrand                2007-2015             */
+/*  Author: Olivier Bertrand                2007-2016             */
 /******************************************************************/
 #include "my_global.h"
 #include <string.h>
@@ -68,9 +68,9 @@ class LIBXMLDOC : public XMLDOCUMENT {
   virtual void   SetNofree(bool b) {Nofreelist = b;}
 
   // Methods
-  virtual bool    Initialize(PGLOBAL g);
-  virtual bool    ParseFile(char *fn);
-  virtual bool    NewDoc(PGLOBAL g, char *ver);
+	virtual bool    Initialize(PGLOBAL g, PCSZ entry, bool zipped);
+  virtual bool    ParseFile(PGLOBAL g, char *fn);
+  virtual bool    NewDoc(PGLOBAL g, PCSZ ver);
   virtual void    AddComment(PGLOBAL g, char *com);
   virtual PXNODE  GetRoot(PGLOBAL g);
   virtual PXNODE  NewRoot(PGLOBAL g, char *name);
@@ -119,9 +119,9 @@ class XML2NODE : public XMLNODE {
   virtual PXLIST SelectNodes(PGLOBAL g, char *xp, PXLIST lp);
   virtual PXNODE SelectSingleNode(PGLOBAL g, char *xp, PXNODE np);
   virtual PXATTR GetAttribute(PGLOBAL g, char *name, PXATTR ap);
-  virtual PXNODE AddChildNode(PGLOBAL g, char *name, PXNODE np);
+  virtual PXNODE AddChildNode(PGLOBAL g, PCSZ name, PXNODE np);
   virtual PXATTR AddProperty(PGLOBAL g, char *name, PXATTR ap);
-  virtual void   AddText(PGLOBAL g, char *txtp);
+  virtual void   AddText(PGLOBAL g, PCSZ txtp);
   virtual void   DeleteChild(PGLOBAL g, PXNODE dnp);
 
  protected:
@@ -373,22 +373,33 @@ LIBXMLDOC::LIBXMLDOC(char *nsl, char *nsdf, char *enc, PFBLOCK fp)
 /******************************************************************/
 /*  Initialize XML parser and check library compatibility.        */
 /******************************************************************/
-bool LIBXMLDOC::Initialize(PGLOBAL g)
-  {
+bool LIBXMLDOC::Initialize(PGLOBAL g, PCSZ entry, bool zipped)
+{
+	if (zipped && InitZip(g, entry))
+		return true;
+
   int n = xmlKeepBlanksDefault(1);
   return MakeNSlist(g);
-  } // end of Initialize
+} // end of Initialize
 
 /******************************************************************/
 /* Parse the XML file and construct node tree in memory.          */
 /******************************************************************/
-bool LIBXMLDOC::ParseFile(char *fn)
+bool LIBXMLDOC::ParseFile(PGLOBAL g, char *fn)
   {
   if (trace)
     htrc("ParseFile\n");
 
-  if ((Docp = xmlParseFile(fn))) {
-    if (Docp->encoding)
+	if (zip) {
+		// Parse an in memory document
+		char *xdoc = GetMemDoc(g, fn);
+
+		Docp = (xdoc) ? xmlParseDoc((const xmlChar *)xdoc) : NULL;
+	} else
+		Docp = xmlParseFile(fn);
+
+	if (Docp) {
+		if (Docp->encoding)
       Encoding = (char*)Docp->encoding;
 
     return false;
@@ -423,7 +434,7 @@ PFBLOCK LIBXMLDOC::LinkXblock(PGLOBAL g, MODE m, int rc, char *fn)
 /******************************************************************/
 /* Construct and add the XML processing instruction node.         */
 /******************************************************************/
-bool LIBXMLDOC::NewDoc(PGLOBAL g, char *ver)
+bool LIBXMLDOC::NewDoc(PGLOBAL g, PCSZ ver)
   {
   if (trace)
     htrc("NewDoc\n");
@@ -609,6 +620,7 @@ void LIBXMLDOC::CloseDoc(PGLOBAL g, PFBLOCK xp)
     } // endif xp
 
   CloseXML2File(g, xp, false);
+	CloseZip();
   } // end of Close
 
 /******************************************************************/
@@ -851,14 +863,13 @@ RCODE XML2NODE::GetContent(PGLOBAL g, char *buf, int len)
     xmlFree(Content);
 
   if ((Content = xmlNodeGetContent(Nodep))) {
-    char *extra = " \t\r\n";
     char *p1 = (char*)Content, *p2 = buf;
     bool  b = false;
 
     // Copy content eliminating extra characters
     for (; *p1; p1++)
       if ((p2 - buf) < len) {
-        if (strchr(extra, *p1)) {
+        if (strchr(" \t\r\n", *p1)) {
           if (b) {
             // This to have one blank between sub-nodes
             *p2++ = ' ';
@@ -1008,19 +1019,19 @@ PXATTR XML2NODE::GetAttribute(PGLOBAL g, char *name, PXATTR ap)
 /******************************************************************/
 /*  Add a new child node to this node and return it.              */
 /******************************************************************/
-PXNODE XML2NODE::AddChildNode(PGLOBAL g, char *name, PXNODE np)
+PXNODE XML2NODE::AddChildNode(PGLOBAL g, PCSZ name, PXNODE np)
   {
-  char *p, *pn, *pf = NULL;
+  char *p, *pn, *pf = NULL, *nmp = PlugDup(g, name);
 
   if (trace)
     htrc("AddChildNode: %s\n", name);
 
   // Is a prefix specified
-  if ((pn = strchr(name, ':'))) {
-    pf = name;
+  if ((pn = strchr(nmp, ':'))) {
+    pf = nmp;
     *pn++ = '\0';                    // Separate name from prefix
   } else
-    pn = name;
+    pn = nmp;
 
   // If name has the format m[n] only m is taken as node name
   if ((p = strchr(pn, '[')))
@@ -1084,7 +1095,7 @@ PXATTR XML2NODE::AddProperty(PGLOBAL g, char *name, PXATTR ap)
 /******************************************************************/
 /*  Add a new text node to this node.                             */
 /******************************************************************/
-void XML2NODE::AddText(PGLOBAL g, char *txtp)
+void XML2NODE::AddText(PGLOBAL g, PCSZ txtp)
   {
   if (trace)
     htrc("AddText: %s\n", txtp);

@@ -6,7 +6,7 @@
      gcc pam_user_map.c -shared -lpam -fPIC -o pam_user_map.so
 
   Install as appropriate (for example, in /lib/security/).
-  Add to your /etc/pam.d/mysql (preferrably, at the end) this line:
+  Add to your /etc/pam.d/mysql (preferably, at the end) this line:
 =========================================================
 auth            required        pam_user_map.so
 =========================================================
@@ -15,7 +15,7 @@ auth            required        pam_user_map.so
   in the format:  orig_user_name: mapped_user_name
                   @user's_group_name: mapped_user_name
 =========================================================
-#comments and emtpy lines are ignored
+#comments and empty lines are ignored
 john: jack
 bob:  admin
 top:  accounting
@@ -71,6 +71,7 @@ static int populate_user_groups(const char *user, gid_t **groups)
 static int user_in_group(const gid_t *user_groups, int ng,const char *group)
 {
   gid_t group_id;
+  const gid_t *groups_end = user_groups + ng;
 
   {
     struct group *g= getgrnam(group);
@@ -79,7 +80,7 @@ static int user_in_group(const gid_t *user_groups, int ng,const char *group)
     group_id= g->gr_gid;
   }
 
-  for (; user_groups < user_groups + ng; user_groups++)
+  for (; user_groups < groups_end; user_groups++)
   {
     if (*user_groups == group_id)
       return 1;
@@ -127,13 +128,13 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
       s++;
     }
     from= s;
-    skip(isalnum(*s) || (*s == '_'));
+    skip(isalnum(*s) || (*s == '_') || (*s == '.') || (*s == '-') || (*s == '$'));
     end_from= s;
     skip(isspace(*s));
     if (end_from == from || *s++ != ':') goto syntax_error;
     skip(isspace(*s));
     to= s;
-    skip(isalnum(*s) || (*s == '_'));
+    skip(isalnum(*s) || (*s == '_') || (*s == '.') || (*s == '-') || (*s == '$'));
     end_to= s;
     if (end_to == to) goto syntax_error;
 
@@ -146,7 +147,7 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
       goto ret;
     }
   }
-  pam_err= PAM_SUCCESS;
+  pam_err= PAM_AUTH_ERR;
   goto ret;
 
 syntax_error:

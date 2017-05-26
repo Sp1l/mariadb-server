@@ -95,9 +95,9 @@ public:
   ha_rows records_in_range(uint inx, key_range *min_key,
                                    key_range *max_key);
 
-  double scan_time() { return nvalues(); }
-  double read_time(uint index, uint ranges, ha_rows rows) { return rows; }
-  double keyread_time(uint index, uint ranges, ha_rows rows) { return rows; }
+  double scan_time() { return (double)nvalues(); }
+  double read_time(uint index, uint ranges, ha_rows rows) { return (double)rows; }
+  double keyread_time(uint index, uint ranges, ha_rows rows) { return (double)rows; }
 
 private:
   void set(uchar *buf);
@@ -452,7 +452,11 @@ int ha_seq_group_by_handler::next_row()
     switch (item_sum->sum_func()) {
     case Item_sum::COUNT_FUNC:
     {
-      field->store((longlong) elements, 1);
+      Item *arg0= ((Item_sum*) item_sum)->get_arg(0);
+      if (arg0->basic_const_item() && arg0->is_null())
+        field->store(0LL, 1);
+      else
+        field->store((longlong) elements, 1);
       break;
     }
     case Item_sum::SUM_FUNC:

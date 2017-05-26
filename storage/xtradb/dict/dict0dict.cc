@@ -1,8 +1,8 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2015, MariaDB Corporation.
+Copyright (c) 2013, 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -888,6 +888,12 @@ dict_index_get_nth_col_or_prefix_pos(
 
 	ut_ad(index);
 	ut_ad(index->magic_n == DICT_INDEX_MAGIC_N);
+	ut_ad((inc_prefix && !prefix_col_pos) || (!inc_prefix));
+
+	if (!prefix_col_pos) {
+		prefix_col_pos = &prefixed_pos_dummy;
+	}
+	*prefix_col_pos = ULINT_UNDEFINED;
 
 	if (!prefix_col_pos) {
 		prefix_col_pos = &prefixed_pos_dummy;
@@ -1116,7 +1122,7 @@ dict_init(void)
 		       &dict_operation_lock, SYNC_DICT_OPERATION);
 
 	if (!srv_read_only_mode) {
-		dict_foreign_err_file = os_file_create_tmpfile();
+		dict_foreign_err_file = os_file_create_tmpfile(NULL);
 		ut_a(dict_foreign_err_file);
 
 		mutex_create(dict_foreign_err_mutex_key,
@@ -1185,12 +1191,29 @@ dict_table_open_on_name(
 
 	if (table != NULL) {
 
-		/* If table is encrypted return table */
+		/* If table is encrypted or corrupted */
 		if (ignore_err == DICT_ERR_IGNORE_NONE
-			&& table->is_encrypted) {
+		    && !table->is_readable()) {
 			/* Make life easy for drop table. */
 			if (table->can_be_evicted) {
 				dict_table_move_from_lru_to_non_lru(table);
+			}
+
+			if (table->corrupted) {
+
+				if (!dict_locked) {
+					mutex_exit(&dict_sys->mutex);
+				}
+
+				char		buf[MAX_FULL_NAME_LEN];
+				ut_format_name(table->name, TRUE, buf, sizeof(buf));
+
+				ib_logf(IB_LOG_LEVEL_ERROR,
+					"Table %s is corrupted. Please "
+					"drop the table and recreate.",
+					buf);
+
+				return(NULL);
 			}
 
 			if (table->can_be_evicted) {
@@ -1204,28 +1227,6 @@ dict_table_open_on_name(
 			}
 
 			return (table);
-		}
-		/* If table is corrupted, return NULL */
-		else if (ignore_err == DICT_ERR_IGNORE_NONE
-		    && table->corrupted) {
-
-			/* Make life easy for drop table. */
-			if (table->can_be_evicted) {
-				dict_table_move_from_lru_to_non_lru(table);
-			}
-
-			if (!dict_locked) {
-				mutex_exit(&dict_sys->mutex);
-			}
-
-			ut_print_timestamp(stderr);
-
-			fprintf(stderr, "  InnoDB: table ");
-			ut_print_name(stderr, NULL, TRUE, table->name);
-			fprintf(stderr, "is corrupted. Please drop the table "
-				"and recreate\n");
-
-			return(NULL);
 		}
 
 		if (table->can_be_evicted) {
@@ -1643,6 +1644,7 @@ struct dict_foreign_remove_partial
 		if (table != NULL) {
 			table->referenced_set.erase(foreign);
 		}
+		dict_foreign_free(foreign);
 	}
 };
 
@@ -1659,10 +1661,13 @@ dict_table_rename_in_cache(
 					to preserve the original table name
 					in constraints which reference it */
 {
+	dberr_t		err;
 	dict_foreign_t*	foreign;
 	dict_index_t*	index;
 	ulint		fold;
 	char		old_name[MAX_FULL_NAME_LEN + 1];
+	os_file_type_t	ftype;
+	ibool		exists;
 
 	ut_ad(mutex_own(&(dict_sys->mutex)));
 
@@ -1700,8 +1705,6 @@ dict_table_rename_in_cache(
 	.ibd file and rebuild the .isl file if needed. */
 
 	if (dict_table_is_discarded(table)) {
-		os_file_type_t	type;
-		ibool		exists;
 		char*		filepath;
 
 		ut_ad(table->space != TRX_SYS_SPACE);
@@ -1720,7 +1723,7 @@ dict_table_rename_in_cache(
 		fil_delete_tablespace(table->space, BUF_REMOVE_ALL_NO_WRITE);
 
 		/* Delete any temp file hanging around. */
-		if (os_file_status(filepath, &exists, &type)
+		if (os_file_status(filepath, &exists, &ftype)
 		    && exists
 		    && !os_file_delete_if_exists(innodb_file_temp_key,
 						 filepath)) {
@@ -1732,8 +1735,6 @@ dict_table_rename_in_cache(
 		mem_free(filepath);
 
 	} else if (table->space != TRX_SYS_SPACE) {
-		char*	new_path = NULL;
-
 		if (DICT_TF2_FLAG_IS_SET(table, DICT_TF2_TEMPORARY)) {
 			ut_print_timestamp(stderr);
 			fputs("  InnoDB: Error: trying to rename a"
@@ -1747,34 +1748,43 @@ dict_table_rename_in_cache(
 			}
 
 			return(DB_ERROR);
+		}
 
-		} else if (DICT_TF_HAS_DATA_DIR(table->flags)) {
-			char*		old_path;
+		char*	new_path = NULL;
+		char*	old_path = fil_space_get_first_path(table->space);
 
-			old_path = fil_space_get_first_path(table->space);
-
+		if (DICT_TF_HAS_DATA_DIR(table->flags)) {
 			new_path = os_file_make_new_pathname(
 				old_path, new_name);
 
-			mem_free(old_path);
-
-			dberr_t	err = fil_create_link_file(
-				new_name, new_path);
-
+			err = fil_create_link_file(new_name, new_path);
 			if (err != DB_SUCCESS) {
 				mem_free(new_path);
+				mem_free(old_path);
 				return(DB_TABLESPACE_EXISTS);
 			}
+		} else {
+			new_path = fil_make_ibd_name(new_name, false);
+		}
+
+		/* New filepath must not exist. */
+		err = fil_rename_tablespace_check(
+			table->space, old_path, new_path, false);
+		if (err != DB_SUCCESS) {
+			mem_free(old_path);
+			mem_free(new_path);
+			return(err);
 		}
 
 		ibool	success = fil_rename_tablespace(
 			old_name, table->space, new_name, new_path);
 
+		mem_free(old_path);
+		mem_free(new_path);
+
 		/* If the tablespace is remote, a new .isl file was created
 		If success, delete the old one. If not, delete the new one.  */
-		if (new_path) {
-
-			mem_free(new_path);
+		if (DICT_TF_HAS_DATA_DIR(table->flags)) {
 			fil_delete_link_file(success ? old_name : new_name);
 		}
 
@@ -3589,8 +3599,7 @@ dict_foreign_add_to_cache(
 	}
 
 	if (for_in_cache) {
-		/* Free the foreign object */
-		mem_heap_free(foreign->heap);
+		dict_foreign_free(foreign);
 	} else {
 		for_in_cache = foreign;
 	}
@@ -3614,7 +3623,7 @@ dict_foreign_add_to_cache(
 				" the ones in table.");
 
 			if (for_in_cache == foreign) {
-				mem_heap_free(foreign->heap);
+				dict_foreign_free(foreign);
 			}
 
 			return(DB_CANNOT_ADD_CONSTRAINT);
@@ -3670,7 +3679,7 @@ dict_foreign_add_to_cache(
 							be one */
 				}
 
-				mem_heap_free(foreign->heap);
+				dict_foreign_free(foreign);
 			}
 
 			return(DB_CANNOT_ADD_CONSTRAINT);
@@ -6175,9 +6184,27 @@ dict_set_corrupted_by_space(
 
 	/* mark the table->corrupted bit only, since the caller
 	could be too deep in the stack for SYS_INDEXES update */
-	table->corrupted = TRUE;
+	table->corrupted = true;
+	table->file_unreadable = true;
 
 	return(TRUE);
+}
+
+
+/** Flags a table with specified space_id encrypted in the data dictionary
+cache
+@param[in]	space_id	Tablespace id */
+UNIV_INTERN
+void
+dict_set_encrypted_by_space(ulint	space_id)
+{
+	dict_table_t*   table;
+
+	table = dict_find_table_by_space(space_id);
+
+	if (table) {
+		table->file_unreadable = true;
+	}
 }
 
 /**********************************************************************//**
@@ -6206,7 +6233,6 @@ dict_set_corrupted(
 		row_mysql_lock_data_dictionary(trx);
 	}
 
-	ut_ad(index);
 	ut_ad(mutex_own(&dict_sys->mutex));
 	ut_ad(!dict_table_is_comp(dict_sys->sys_tables));
 	ut_ad(!dict_table_is_comp(dict_sys->sys_indexes));
@@ -6301,7 +6327,7 @@ dict_set_corrupted_index_cache_only(
 	dict_index_t*	index,		/*!< in/out: index */
 	dict_table_t*	table)		/*!< in/out: table */
 {
-	ut_ad(index);
+	ut_ad(index != NULL);
 	ut_ad(mutex_own(&dict_sys->mutex));
 	ut_ad(!dict_table_is_comp(dict_sys->sys_tables));
 	ut_ad(!dict_table_is_comp(dict_sys->sys_indexes));
@@ -6309,56 +6335,15 @@ dict_set_corrupted_index_cache_only(
 	/* Mark the table as corrupted only if the clustered index
 	is corrupted */
 	if (dict_index_is_clust(index)) {
-		dict_table_t*	corrupt_table;
+		ut_ad((index->table != NULL) || (table != NULL)
+		      || index->table  == table);
 
-		corrupt_table = table ? table : index->table;
-		ut_ad(!index->table || !table || index->table  == table);
-
-		if (corrupt_table) {
-			corrupt_table->corrupted = TRUE;
-		}
+		table->corrupted = TRUE;
 	}
 
 	index->type |= DICT_CORRUPT;
 }
 
-/*************************************************************************
-set is_corrupt flag by space_id*/
-
-void
-dict_table_set_corrupt_by_space(
-/*============================*/
-	ulint	space_id,
-	ibool	need_mutex)
-{
-	dict_table_t*	table;
-	ibool		found = FALSE;
-
-	ut_a(space_id != 0 && space_id < SRV_LOG_SPACE_FIRST_ID);
-
-	if (need_mutex)
-		mutex_enter(&(dict_sys->mutex));
-
-	table = UT_LIST_GET_FIRST(dict_sys->table_LRU);
-
-	while (table) {
-		if (table->space == space_id) {
-			table->is_corrupt = TRUE;
-			found = TRUE;
-		}
-
-		table = UT_LIST_GET_NEXT(table_LRU, table);
-	}
-
-	if (need_mutex)
-		mutex_exit(&(dict_sys->mutex));
-
-	if (!found) {
-		fprintf(stderr, "InnoDB: space to be marked as "
-			"crashed was not found for id " ULINTPF ".\n",
-			space_id);
-	}
-}
 #endif /* !UNIV_HOTBACKUP */
 
 /**********************************************************************//**
@@ -6429,11 +6414,6 @@ dict_table_get_index_on_name(
 	const char*	name)	/*!< in: name of the index to find */
 {
 	dict_index_t*	index;
-
-	/* If name is NULL, just return */
-	if (!name) {
-		return(NULL);
-	}
 
 	index = dict_table_get_first_index(table);
 
@@ -6685,7 +6665,8 @@ dict_table_schema_check(
 		}
 	}
 
-	if (table->ibd_file_missing) {
+	if (!table->is_readable() &&
+	    fil_space_get(table->space) == NULL) {
 		/* missing tablespace */
 
 		ut_snprintf(errstr, errstr_sz,

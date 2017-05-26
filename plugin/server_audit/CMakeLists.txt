@@ -11,6 +11,8 @@
 # 
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA
 
-MYSQL_ADD_PLUGIN(server_audit server_audit.c MODULE_ONLY)
+SET(SOURCES server_audit.c test_audit_v4.c plugin_audit_v4.h)
+
+MYSQL_ADD_PLUGIN(server_audit ${SOURCES} MODULE_ONLY RECOMPILE_FOR_EMBEDDED)

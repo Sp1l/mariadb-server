@@ -1,5 +1,5 @@
 /* Copyright (c) 2004, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2011, 2015, MariaDB
+   Copyright (c) 2011, 2016, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -35,6 +35,7 @@
 #include "sp_cache.h"
 #include "datadict.h"   // dd_frm_is_view()
 #include "sql_derived.h"
+#include "sql_cte.h"    // check_dependencies_in_with_clauses()
 
 #define MD5_BUFF_LENGTH 33
 
@@ -167,7 +168,7 @@ err:
   @param item_list  List of Items which should be checked
 */
 
-static void make_valid_column_names(THD *thd, List<Item> &item_list)
+void make_valid_column_names(THD *thd, List<Item> &item_list)
 {
   Item *item;
   uint name_len;
@@ -215,7 +216,7 @@ fill_defined_view_parts (THD *thd, TABLE_LIST *view)
   TABLE_LIST decoy;
 
   memcpy (&decoy, view, sizeof (TABLE_LIST));
-  if (tdc_open_view(thd, &decoy, decoy.alias, OPEN_VIEW_NO_PARSE))
+  if (tdc_open_view(thd, &decoy, OPEN_VIEW_NO_PARSE))
     return TRUE;
 
   if (!lex->definer)
@@ -244,7 +245,7 @@ fill_defined_view_parts (THD *thd, TABLE_LIST *view)
   @param mode VIEW_CREATE_NEW, VIEW_ALTER, VIEW_CREATE_OR_REPLACE
 
   @retval FALSE Operation was a success.
-  @retval TRUE An error occured.
+  @retval TRUE An error occurred.
 */
 
 bool create_view_precheck(THD *thd, TABLE_LIST *tables, TABLE_LIST *view,
@@ -387,7 +388,7 @@ bool create_view_precheck(THD *thd, TABLE_LIST *tables, TABLE_LIST *view,
   @note This function handles both create and alter view commands.
 
   @retval FALSE Operation was a success.
-  @retval TRUE An error occured.
+  @retval TRUE An error occurred.
 */
 
 bool mysql_create_view(THD *thd, TABLE_LIST *views,
@@ -429,7 +430,22 @@ bool mysql_create_view(THD *thd, TABLE_LIST *views,
   lex->link_first_table_back(view, link_to_local);
   view->open_type= OT_BASE_ONLY;
 
-  if (open_temporary_tables(thd, lex->query_tables) ||
+  if (check_dependencies_in_with_clauses(lex->with_clauses_list))
+  {
+    res= TRUE;
+    goto err;
+  }
+
+  /*
+    ignore lock specs for CREATE statement
+  */
+  if (lex->current_select->lock_type != TL_READ_DEFAULT)
+  {
+    lex->current_select->set_lock_for_tables(TL_READ_DEFAULT);
+    view->mdl_request.set_type(MDL_EXCLUSIVE);
+  }
+
+  if (thd->open_temporary_tables(lex->query_tables) ||
       open_and_lock_tables(thd, lex->query_tables, TRUE, 0))
   {
     view= lex->unlink_first_table(&link_to_local);
@@ -898,12 +914,14 @@ static int mysql_register_view(THD *thd, TABLE_LIST *view,
   view_query.length(0);
   is_query.length(0);
   {
-    ulong sql_mode= thd->variables.sql_mode & MODE_ANSI_QUOTES;
+    sql_mode_t sql_mode= thd->variables.sql_mode & MODE_ANSI_QUOTES;
     thd->variables.sql_mode&= ~MODE_ANSI_QUOTES;
 
-    lex->unit.print(&view_query, QT_VIEW_INTERNAL);
-    lex->unit.print(&is_query,
-                    enum_query_type(QT_TO_SYSTEM_CHARSET | QT_WITHOUT_INTRODUCERS));
+    lex->unit.print(&view_query, enum_query_type(QT_VIEW_INTERNAL |
+                                                 QT_ITEM_ORIGINAL_FUNC_NULLIF));
+    lex->unit.print(&is_query, enum_query_type(QT_TO_SYSTEM_CHARSET |
+                                               QT_WITHOUT_INTRODUCERS |
+                                               QT_ITEM_ORIGINAL_FUNC_NULLIF));
 
     thd->variables.sql_mode|= sql_mode;
   }
@@ -1328,7 +1346,7 @@ bool mysql_make_view(THD *thd, TABLE_SHARE *share, TABLE_LIST *table,
     view_select= &lex->select_lex;
     view_select->select_number= ++thd->select_number;
 
-    ulonglong saved_mode= thd->variables.sql_mode;
+    sql_mode_t saved_mode= thd->variables.sql_mode;
     /* switch off modes which can prevent normal parsing of VIEW
       - MODE_REAL_AS_FLOAT            affect only CREATE TABLE parsing
       + MODE_PIPES_AS_CONCAT          affect expression parsing
@@ -1380,6 +1398,9 @@ bool mysql_make_view(THD *thd, TABLE_SHARE *share, TABLE_LIST *table,
     TABLE_LIST *view_tables_tail= 0;
     TABLE_LIST *tbl;
     Security_context *security_ctx= 0;
+
+    if (check_dependencies_in_with_clauses(thd->lex->with_clauses_list))
+      goto err;
 
     /*
       Check rights to run commands (ANALYZE SELECT, EXPLAIN SELECT &
@@ -1535,8 +1556,7 @@ bool mysql_make_view(THD *thd, TABLE_SHARE *share, TABLE_LIST *table,
 
       /* Fields in this view can be used in upper select in case of merge.  */
       if (table->select_lex)
-        table->select_lex->select_n_where_fields+=
-          lex->select_lex.select_n_where_fields;
+        table->select_lex->add_where_field(&lex->select_lex);
     }
     /*
       This method has a dependency on the proper lock type being set,
@@ -1610,6 +1630,8 @@ bool mysql_make_view(THD *thd, TABLE_SHARE *share, TABLE_LIST *table,
       sl->context.error_processor= &view_error_processor;
       sl->context.error_processor_data= (void *)table;
     }
+
+    view_select->master_unit()->is_view= true;
 
     /*
       check MERGE algorithm ability

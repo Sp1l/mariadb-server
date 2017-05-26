@@ -1,6 +1,7 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2013, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2014, 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -272,6 +273,9 @@ lock_wait_suspend_thread(
 
 	slot = lock_wait_table_reserve_slot(thr, lock_wait_timeout);
 
+	lock_wait_mutex_exit();
+	trx_mutex_exit(trx);
+
 	if (thr->lock_state == QUE_THR_LOCK_ROW) {
 		srv_stats.n_lock_wait_count.inc();
 		srv_stats.n_lock_wait_current_count.inc();
@@ -283,18 +287,20 @@ lock_wait_suspend_thread(
 		}
 	}
 
-	lock_wait_mutex_exit();
-	trx_mutex_exit(trx);
-
 	ulint	lock_type = ULINT_UNDEFINED;
 
-	lock_mutex_enter();
-
+	/* The wait_lock can be cleared by another thread when the
+	lock is released. But the wait can only be initiated by the
+	current thread which owns the transaction. Only acquire the
+	mutex if the wait_lock is still active. */
 	if (const lock_t* wait_lock = trx->lock.wait_lock) {
-		lock_type = lock_get_type_low(wait_lock);
+		lock_mutex_enter();
+		wait_lock = trx->lock.wait_lock;
+		if (wait_lock) {
+			lock_type = lock_get_type_low(wait_lock);
+		}
+		lock_mutex_exit();
 	}
-
-	lock_mutex_exit();
 
 	had_dict_lock = trx->dict_operation_lock_mode;
 
@@ -396,7 +402,9 @@ lock_wait_suspend_thread(
 	if (lock_wait_timeout < 100000000
 	    && wait_time > (double) lock_wait_timeout) {
 #ifdef WITH_WSREP
-                if (!wsrep_is_BF_lock_timeout(trx)) {
+                if (!wsrep_on(trx->mysql_thd) ||
+                    (!wsrep_is_BF_lock_timeout(trx) &&
+                     trx->error_state != DB_DEADLOCK)) {
 #endif /* WITH_WSREP */
 
 		trx->error_state = DB_LOCK_WAIT_TIMEOUT;
@@ -508,11 +516,7 @@ A thread which wakes up threads whose lock wait may have lasted too long.
 @return	a dummy parameter */
 extern "C" UNIV_INTERN
 os_thread_ret_t
-DECLARE_THREAD(lock_wait_timeout_thread)(
-/*=====================================*/
-	void*	arg __attribute__((unused)))
-			/* in: a dummy parameter required by
-			os_thread_create */
+DECLARE_THREAD(lock_wait_timeout_thread)(void*)
 {
 	ib_int64_t	sig_count = 0;
 	os_event_t	event = lock_sys->timeout_event;
@@ -522,8 +526,6 @@ DECLARE_THREAD(lock_wait_timeout_thread)(
 #ifdef UNIV_PFS_THREAD
 	pfs_register_thread(srv_lock_timeout_thread_key);
 #endif /* UNIV_PFS_THREAD */
-
-	lock_sys->timeout_thread_active = true;
 
 	do {
 		srv_slot_t*	slot;

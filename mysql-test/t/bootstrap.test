@@ -36,7 +36,7 @@ remove_file $MYSQLTEST_VARDIR/tmp/bootstrap_error.sql;
 # Bootstrap with a query larger than 2*thd->net.max_packet
 #
 set @my_max_allowed_packet= @@max_allowed_packet;
-set global max_allowed_packet=100*@@max_allowed_packet;
+set global max_allowed_packet=64*@@max_allowed_packet;
 --disable_query_log
 create table t1 select 2 as a, concat(repeat('MySQL', @@max_allowed_packet/10), ';') as b;
 eval select * into outfile '$MYSQLTEST_VARDIR/tmp/long_query.sql' from t1;
@@ -80,7 +80,7 @@ EOF
 --write_file $MYSQLTEST_VARDIR/tmp/bootstrap_plugins.sql
 SET SQL_MODE="";
 use test;
-create table t1(a int) engine=example;
+create table t1(a int) engine=example charset=latin1;
 EOF
 --exec $MYSQLD_BOOTSTRAP_CMD --plugin-dir=$PLUGIN_DIR < $MYSQLTEST_VARDIR/tmp/bootstrap_plugins.sql >> $MYSQLTEST_VARDIR/tmp/bootstrap.log 2>&1
 --remove_file $MYSQLTEST_VARDIR/tmp/bootstrap_plugins.sql
@@ -90,3 +90,13 @@ drop table t1;
 --replace_result .dll .so
 select * from mysql.plugin;
 truncate table mysql.plugin;
+
+
+#
+# MDEV-9969 mysql_install_db error processing ignore_db_dirs.
+#
+--write_file $MYSQLTEST_VARDIR/tmp/bootstrap_9969.sql
+use test;
+EOF
+--exec $MYSQLD_BOOTSTRAP_CMD --ignore-db-dirs='some_dir' --ignore-db-dirs='some_dir' < $MYSQLTEST_VARDIR/tmp/bootstrap_9969.sql >> $MYSQLTEST_VARDIR/tmp/bootstrap.log 2>&1
+--remove_file $MYSQLTEST_VARDIR/tmp/bootstrap_9969.sql

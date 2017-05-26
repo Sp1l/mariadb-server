@@ -11,7 +11,7 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #ifndef UNICODE
 #define UNICODE
@@ -886,11 +886,11 @@ extern "C" UINT __stdcall CheckServiceUpgrades(MSIHANDLE hInstall)
       (QUERY_SERVICE_CONFIGW*)(void *)config_buffer;
     DWORD needed;
     BOOL ok= QueryServiceConfigW(service, config,sizeof(config_buffer),
-      &needed);
+      &needed) && (config->dwStartType != SERVICE_DISABLED);
     CloseServiceHandle(service);
     if (ok)
     {
-        mysqld_service_properties props;
+       mysqld_service_properties props;
        if (get_mysql_service_properties(config->lpBinaryPathName, &props))
                   continue;
         /* 

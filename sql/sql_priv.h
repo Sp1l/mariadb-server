@@ -126,7 +126,7 @@
 #define TMP_TABLE_ALL_COLUMNS   (1ULL << 12)    // SELECT, intern
 #define OPTION_WARNINGS         (1ULL << 13)    // THD, user
 #define OPTION_AUTO_IS_NULL     (1ULL << 14)    // THD, user, binlog
-#define OPTION_FOUND_COMMENT    (1ULL << 15)    // SELECT, intern, parser
+#define OPTION_NO_CHECK_CONSTRAINT_CHECKS  (1ULL << 14)
 #define OPTION_SAFE_UPDATES     (1ULL << 16)    // THD, user
 #define OPTION_BUFFER_RESULT    (1ULL << 17)    // SELECT, user
 #define OPTION_BIN_LOG          (1ULL << 18)    // THD, user
@@ -183,6 +183,7 @@
 #define OPTION_ALLOW_BATCH              (1ULL << 36) // THD, intern (slave)
 #define OPTION_SKIP_REPLICATION         (1ULL << 37) // THD, user
 #define OPTION_RPL_SKIP_PARALLEL        (1ULL << 38)
+#define OPTION_FOUND_COMMENT            (1ULL << 39) // SELECT, intern, parser
 
 /* The rest of the file is included in the server only */
 #ifndef MYSQL_CLIENT
@@ -224,7 +225,8 @@
 #define OPTIMIZER_SWITCH_TABLE_ELIMINATION         (1ULL << 26)
 #define OPTIMIZER_SWITCH_EXTENDED_KEYS             (1ULL << 27)
 #define OPTIMIZER_SWITCH_EXISTS_TO_IN              (1ULL << 28)
-#define OPTIMIZER_SWITCH_USE_CONDITION_SELECTIVITY (1ULL << 29)
+#define OPTIMIZER_SWITCH_ORDERBY_EQ_PROP           (1ULL << 29)
+#define OPTIMIZER_SWITCH_COND_PUSHDOWN_FOR_DERIVED (1ULL << 30)
 
 #define OPTIMIZER_SWITCH_DEFAULT   (OPTIMIZER_SWITCH_INDEX_MERGE | \
                                     OPTIMIZER_SWITCH_INDEX_MERGE_UNION | \
@@ -248,7 +250,9 @@
                                     OPTIMIZER_SWITCH_SEMIJOIN | \
                                     OPTIMIZER_SWITCH_FIRSTMATCH | \
                                     OPTIMIZER_SWITCH_LOOSE_SCAN | \
-                                    OPTIMIZER_SWITCH_EXISTS_TO_IN)
+                                    OPTIMIZER_SWITCH_EXISTS_TO_IN | \
+                                    OPTIMIZER_SWITCH_ORDERBY_EQ_PROP | \
+                                    OPTIMIZER_SWITCH_COND_PUSHDOWN_FOR_DERIVED)
 /*
   Replication uses 8 bytes to store SQL_MODE in the binary log. The day you
   use strictly more than 64 bits by adding one more define above, you should
@@ -320,11 +324,11 @@
 /* Used to check GROUP BY list in the MODE_ONLY_FULL_GROUP_BY mode */
 #define UNDEF_POS (-1)
 
+#endif /* !MYSQL_CLIENT */
+
 /* BINLOG_DUMP options */
 
 #define BINLOG_DUMP_NON_BLOCK   1
-#endif /* !MYSQL_CLIENT */
-
 #define BINLOG_SEND_ANNOTATE_ROWS_EVENT   2
 
 #ifndef MYSQL_CLIENT
@@ -344,6 +348,7 @@ enum enum_parsing_place
   IN_WHERE,
   IN_ON,
   IN_GROUP_BY,
+  IN_ORDER_BY,
   PARSING_PLACE_SIZE /* always should be the last */
 };
 

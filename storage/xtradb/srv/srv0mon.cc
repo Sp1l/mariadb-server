@@ -1,8 +1,8 @@
 /*****************************************************************************
 
-Copyright (c) 2010, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2010, 2016, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2015, MariaDB Corporation.
+Copyright (c) 2013, 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -308,6 +308,12 @@ static monitor_info_t	innodb_counter_info[] =
 	 static_cast<monitor_type_t>(
 	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
 	 MONITOR_DEFAULT_START, MONITOR_OVLD_PAGES_READ},
+
+	{"buffer_pages0_read", "buffer",
+	 "Number of page 0 read (innodb_pages0_read)",
+	 static_cast<monitor_type_t>(
+	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
+	 MONITOR_DEFAULT_START, MONITOR_OVLD_PAGES0_READ},
 
 	{"buffer_index_sec_rec_cluster_reads", "buffer",
 	 "Number of secondary record reads triggered cluster read",
@@ -684,11 +690,11 @@ static monitor_info_t	innodb_counter_info[] =
 	 MONITOR_DEFAULT_START, MONITOR_OVLD_OS_FSYNC},
 
 	{"os_pending_reads", "os", "Number of reads pending",
-	 MONITOR_NONE,
+	 MONITOR_DEFAULT_ON,
 	 MONITOR_DEFAULT_START, MONITOR_OS_PENDING_READS},
 
 	{"os_pending_writes", "os", "Number of writes pending",
-	 MONITOR_NONE,
+	 MONITOR_DEFAULT_ON,
 	 MONITOR_DEFAULT_START, MONITOR_OS_PENDING_WRITES},
 
 	{"os_log_bytes_written", "os",
@@ -714,24 +720,6 @@ static monitor_info_t	innodb_counter_info[] =
 	 static_cast<monitor_type_t>(
 	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
 	 MONITOR_DEFAULT_START, MONITOR_OVLD_OS_LOG_PENDING_WRITES},
-
-	{"os_merge_blocks_written", "os",
-	 "Number of merge blocks written (innodb_os_merge_blocks_written)",
-	 static_cast<monitor_type_t>(
-	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
-	 MONITOR_DEFAULT_START, MONITOR_MERGE_BLOCKS_WRITTEN},
-
-	{"os_merge_blocks_read", "os",
-	 "Number of merge blocks read (innodb_os_merge_blocks_read)",
-	 static_cast<monitor_type_t>(
-	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
-	 MONITOR_DEFAULT_START, MONITOR_MERGE_BLOCKS_READ},
-
-	{"os_merge_blocks_merged", "os",
-	 "Number of merge blocks merged (innodb_os_merge_blocks_merged)",
-	 static_cast<monitor_type_t>(
-	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
-	 MONITOR_DEFAULT_START, MONITOR_MERGE_BLOCKS_MERGED},
 
 	/* ========== Counters for Transaction Module ========== */
 	{"module_trx", "transaction", "Transaction Manager",
@@ -1511,7 +1499,10 @@ srv_mon_set_module_control(
 				module */
 				set_current_module = FALSE;
 			} else if (module_id == MONITOR_ALL_COUNTER) {
-				continue;
+				if (!(innodb_counter_info[ix].monitor_type
+				      & MONITOR_GROUP_MODULE)) {
+					continue;
+				}
 			} else {
 				/* Hitting the next module, stop */
 				break;
@@ -1733,6 +1724,11 @@ srv_mon_process_existing_counter(
 		value = stat.n_pages_read;
 		break;
 
+	/* innodb_pages0_read */
+	case MONITOR_OVLD_PAGES0_READ:
+		value = srv_stats.page0_read;
+		break;
+
 	/* Number of times secondary index lookup triggered cluster lookup */
 	case MONITOR_OVLD_INDEX_SEC_REC_CLUSTER_READS:
 		value = srv_stats.n_sec_rec_cluster_reads;
@@ -1788,21 +1784,6 @@ srv_mon_process_existing_counter(
 	case MONITOR_OVLD_OS_LOG_PENDING_WRITES:
 		value = srv_stats.os_log_pending_writes;
 		update_min = TRUE;
-		break;
-
-        /* innodb_os_merge_blocks_written */
-	case MONITOR_MERGE_BLOCKS_WRITTEN:
-		value = srv_stats.merge_buffers_written;
-		break;
-
-        /* innodb_os_merge_blocks_read */
-	case MONITOR_MERGE_BLOCKS_READ:
-		value = srv_stats.merge_buffers_read;
-		break;
-
-	/* innodb_os_merge_blocks_merged */
-	case MONITOR_MERGE_BLOCKS_MERGED:
-		value = srv_stats.merge_buffers_merged;
 		break;
 
 	/* innodb_log_waits */

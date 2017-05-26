@@ -77,6 +77,12 @@ extern "C" {
 	DllExport char *json_object_list(UDF_EXEC_ARGS);
 	DllExport void json_object_list_deinit(UDF_INIT*);
 
+	DllExport my_bool jsonset_grp_size_init(UDF_INIT*, UDF_ARGS*, char*);
+	DllExport long long jsonset_grp_size(UDF_INIT*, UDF_ARGS*, char*, char*);
+
+	DllExport my_bool jsonget_grp_size_init(UDF_INIT*, UDF_ARGS*, char*);
+	DllExport long long jsonget_grp_size(UDF_INIT*, UDF_ARGS*, char*, char*);
+
 	DllExport my_bool json_array_grp_init(UDF_INIT*, UDF_ARGS*, char*);
 	DllExport void json_array_grp_add(UDF_INIT *, UDF_ARGS *, char *, char *);
 	DllExport char *json_array_grp(UDF_EXEC_ARGS);
@@ -212,14 +218,21 @@ extern "C" {
 	DllExport my_bool json_serialize_init(UDF_INIT*, UDF_ARGS*, char*);
 	DllExport char *json_serialize(UDF_EXEC_ARGS);
 	DllExport void json_serialize_deinit(UDF_INIT*);
+
+	DllExport my_bool envar_init(UDF_INIT*, UDF_ARGS*, char*);
+	DllExport char *envar(UDF_EXEC_ARGS);
+
+	DllExport my_bool countin_init(UDF_INIT*, UDF_ARGS*, char*);
+	DllExport long long countin(UDF_EXEC_ARGS);
 } // extern "C"
+
 
 /*********************************************************************************/
 /*  Structure JPN. Used to make the locate path.                                 */
 /*********************************************************************************/
 typedef struct _jpn {
 	enum JTYP Type;
-	PSZ       Key;
+	PCSZ      Key;
 	int       N;
 } JPN, *PJPN;
 

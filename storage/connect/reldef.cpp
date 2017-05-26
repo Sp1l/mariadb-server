@@ -1,11 +1,11 @@
 /************* RelDef CPP Program Source Code File (.CPP) **************/
 /* PROGRAM NAME: RELDEF                                                */
 /* -------------                                                       */
-/*  Version 1.4                                                        */
+/*  Version 1.6                                                        */
 /*                                                                     */
 /* COPYRIGHT:                                                          */
 /* ----------                                                          */
-/*  (C) Copyright to the author Olivier BERTRAND          2004-2015    */
+/*  (C) Copyright to the author Olivier BERTRAND          2004-2016    */
 /*                                                                     */
 /* WHAT THIS PROGRAM DOES:                                             */
 /* -----------------------                                             */
@@ -37,12 +37,15 @@
 #include "plgdbsem.h"
 #include "reldef.h"
 #include "colblk.h"
+#include "tabcol.h"
 #include "filamap.h"
 #include "filamfix.h"
+#if defined(VCT_SUPPORT)
 #include "filamvct.h"
-#if defined(ZIP_SUPPORT)
-#include "filamzip.h"
-#endif   // ZIP_SUPPORT
+#endif   // VCT_SUPPORT
+#if defined(GZ_SUPPORT)
+#include "filamgz.h"
+#endif   // GZ_SUPPORT
 #include "tabdos.h"
 #include "valblk.h"
 #include "tabmul.h"
@@ -85,7 +88,7 @@ PTOS RELDEF::GetTopt(void)
 /***********************************************************************/
 /*  This function sets an integer table information.                   */
 /***********************************************************************/
-bool RELDEF::SetIntCatInfo(PSZ what, int n)
+bool RELDEF::SetIntCatInfo(PCSZ what, int n)
 	{
 	return Hc->SetIntegerOption(what, n);
 	} // end of SetIntCatInfo
@@ -93,7 +96,7 @@ bool RELDEF::SetIntCatInfo(PSZ what, int n)
 /***********************************************************************/
 /*  This function returns integer table information.                   */
 /***********************************************************************/
-int RELDEF::GetIntCatInfo(PSZ what, int idef)
+int RELDEF::GetIntCatInfo(PCSZ what, int idef)
 	{
 	int n= Hc->GetIntegerOption(what);
 
@@ -103,7 +106,7 @@ int RELDEF::GetIntCatInfo(PSZ what, int idef)
 /***********************************************************************/
 /*  This function returns Boolean table information.                   */
 /***********************************************************************/
-bool RELDEF::GetBoolCatInfo(PSZ what, bool bdef)
+bool RELDEF::GetBoolCatInfo(PCSZ what, bool bdef)
 	{
 	bool b= Hc->GetBooleanOption(what, bdef);
 
@@ -113,9 +116,10 @@ bool RELDEF::GetBoolCatInfo(PSZ what, bool bdef)
 /***********************************************************************/
 /*  This function returns size catalog information.                    */
 /***********************************************************************/
-int RELDEF::GetSizeCatInfo(PSZ what, PSZ sdef)
+int RELDEF::GetSizeCatInfo(PCSZ what, PCSZ sdef)
 	{
-	char * s, c;
+	char c;
+	PCSZ s;
   int  i, n= 0;
 
 	if (!(s= Hc->GetStringOption(what)))
@@ -125,6 +129,7 @@ int RELDEF::GetSizeCatInfo(PSZ what, PSZ sdef)
     switch (toupper(c)) {
       case 'M':
         n *= 1024;
+        // fall through
       case 'K':
         n *= 1024;
       } // endswitch c
@@ -135,9 +140,9 @@ int RELDEF::GetSizeCatInfo(PSZ what, PSZ sdef)
 /***********************************************************************/
 /*  This function sets char table information in buf.                  */
 /***********************************************************************/
-int RELDEF::GetCharCatInfo(PSZ what, PSZ sdef, char *buf, int size)
+int RELDEF::GetCharCatInfo(PCSZ what, PCSZ sdef, char *buf, int size)
 	{
-	char *s= Hc->GetStringOption(what);
+	PCSZ s= Hc->GetStringOption(what);
 
 	strncpy(buf, ((s) ? s : sdef), size);
 	return size;
@@ -155,9 +160,10 @@ bool RELDEF::Partitioned(void)
 /*  This function returns string table information.                    */
 /*  Default parameter is "*" to get the handler default.               */
 /***********************************************************************/
-char *RELDEF::GetStringCatInfo(PGLOBAL g, PSZ what, PSZ sdef)
+char *RELDEF::GetStringCatInfo(PGLOBAL g, PCSZ what, PCSZ sdef)
 	{
-	char *name, *sval= NULL, *s= Hc->GetStringOption(what, sdef);
+	char *sval = NULL;
+	PCSZ  name, s= Hc->GetStringOption(what, sdef);
 	
 	if (s) {
     if (!Hc->IsPartitioned() ||
@@ -165,12 +171,12 @@ char *RELDEF::GetStringCatInfo(PGLOBAL g, PSZ what, PSZ sdef)
                                    && stricmp(what, "connect")))
 		  sval= PlugDup(g, s);
     else
-      sval= s;
+      sval= (char*)s;
 
   } else if (!stricmp(what, "filename")) {
     // Return default file name
-    char *ftype= Hc->GetStringOption("Type", "*");
-    int   i, n;
+		PCSZ ftype= Hc->GetStringOption("Type", "*");
+    int  i, n;
 
     if (IsFileType(GetTypeID(ftype))) {
       name= Hc->GetPartName();
@@ -217,11 +223,13 @@ TABDEF::TABDEF(void)
 /***********************************************************************/
 /*  Define: initialize the table definition block from XDB file.       */
 /***********************************************************************/
-bool TABDEF::Define(PGLOBAL g, PCATLG cat, LPCSTR name, LPCSTR am)
+bool TABDEF::Define(PGLOBAL g, PCATLG cat, 
+	                  LPCSTR name, LPCSTR schema, LPCSTR am)
   {
   int   poff = 0;
 
-  Name = (PSZ)PlugDup(g, name);
+  Name = (PSZ)name;
+	Schema = (PSZ)schema;
   Cat = cat;
   Hc = ((MYCAT*)cat)->GetHandler();
   Catfunc = GetFuncID(GetStringCatInfo(g, "Catfunc", NULL));
@@ -246,9 +254,9 @@ bool TABDEF::Define(PGLOBAL g, PCATLG cat, LPCSTR name, LPCSTR am)
 /***********************************************************************/
 /*  This function returns the database data path.                      */
 /***********************************************************************/
-PSZ TABDEF::GetPath(void)
+PCSZ TABDEF::GetPath(void)
   {
-  return (Database) ? (PSZ)Database : (Hc) ? Hc->GetDataPath() : NULL;
+  return (Database) ? Database : (Hc) ? Hc->GetDataPath() : NULL;
   } // end of GetPath
 
 /***********************************************************************/
@@ -272,8 +280,13 @@ int TABDEF::GetColCatInfo(PGLOBAL g)
   // Take care of the column definitions
 	i= poff= nof= nlg= 0;
 
+#if defined(__WIN__)
 	// Offsets of HTML and DIR tables start from 0, DBF at 1
-	loff= (tc == TAB_DBF) ? 1 : (tc == TAB_XML || tc == TAB_DIR) ? -1 : 0; 
+	loff= (tc == TAB_DBF) ? 1 : (tc == TAB_XML || tc == TAB_DIR) ? -1 : 0;
+#else   // !__WIN__
+	// Offsets of HTML tables start from 0, DIR and DBF at 1
+	loff = (tc == TAB_DBF || tc == TAB_DIR) ? 1 : (tc == TAB_XML) ? -1 : 0;
+#endif  // !__WIN__
 
   while (true) {
 		// Default Offset depends on table type
@@ -291,7 +304,7 @@ int TABDEF::GetColCatInfo(PGLOBAL g)
 				nlg+= nof;
       case TAB_DIR:
       case TAB_XML:
-        poff= loff + 1;
+				poff= loff + (pcf->Flags & U_VIRTUAL ? 0 : 1);
         break;
       case TAB_INI:
       case TAB_MAC:
@@ -302,7 +315,7 @@ int TABDEF::GetColCatInfo(PGLOBAL g)
       case TAB_OEM:
         poff = 0;      // Offset represents an independant flag
         break;
-      default:         // VCT PLG ODBC MYSQL WMI...
+      default:         // VCT PLG ODBC JDBC MYSQL WMI...
         poff = 0;			 // NA
         break;
 			} // endswitch tc
@@ -437,7 +450,11 @@ int TABDEF::GetColCatInfo(PGLOBAL g)
       } // endswitch tc
 
 		// lrecl must be at least recln to avoid buffer overflow
-		recln= MY_MAX(recln, Hc->GetIntegerOption("Lrecl"));
+		if (trace)
+			htrc("Lrecl: Calculated=%d defined=%d\n", 
+			  recln, Hc->GetIntegerOption("Lrecl"));
+
+		recln = MY_MAX(recln, Hc->GetIntegerOption("Lrecl"));
 		Hc->SetIntegerOption("Lrecl", recln);
 		((PDOSDEF)this)->SetLrecl(recln);
 		} // endif Lrecl
@@ -511,10 +528,11 @@ PTABDEF OEMDEF::GetXdef(PGLOBAL g)
     } // endif getdef
 #else   // !__WIN__
   const char *error = NULL;
-  Dl_info dl_info;
     
 #if 0  // Don't know what all this stuff does
-  // The OEM lib must retrieve exported CONNECT variables
+	Dl_info dl_info;
+
+	// The OEM lib must retrieve exported CONNECT variables
   if (dladdr(&connect_hton, &dl_info)) {
     if (dlopen(dl_info.dli_fname, RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL) == 0) {
       error = dlerror();
@@ -530,7 +548,7 @@ PTABDEF OEMDEF::GetXdef(PGLOBAL g)
 #endif // 0
 
   // Is the library already loaded?
-  if (!Hdll && !(Hdll = dlopen(soname, RTLD_NOLOAD)))
+  if (!Hdll)
     // Load the desired shared library
     if (!(Hdll = dlopen(soname, RTLD_LAZY))) {
       error = dlerror();
@@ -569,7 +587,7 @@ PTABDEF OEMDEF::GetXdef(PGLOBAL g)
     } // endif Cbuf
 
   // Here "OEM" should be replace by a more useful value
-  if (xdefp->Define(g, cat, Name, "OEM"))
+  if (xdefp->Define(g, cat, Name, Schema, "OEM"))
     return NULL;
 
   // Ok, return external block
@@ -600,9 +618,10 @@ bool OEMDEF::DefineAM(PGLOBAL g, LPCSTR, int)
   if (!*Module)
     Module = Subtype;
 
-  Desc = (char*)PlugSubAlloc(g, NULL, strlen(Module)
-                                    + strlen(Subtype) + 3);
-  sprintf(Desc, "%s(%s)", Module, Subtype);
+  char *desc = (char*)PlugSubAlloc(g, NULL, strlen(Module)
+                                          + strlen(Subtype) + 3);
+  sprintf(desc, "%s(%s)", Module, Subtype);
+	Desc = desc;
   return false;
   } // end of DefineAM
 
@@ -611,8 +630,8 @@ bool OEMDEF::DefineAM(PGLOBAL g, LPCSTR, int)
 /***********************************************************************/
 PTDB OEMDEF::GetTable(PGLOBAL g, MODE mode)
   {
-  RECFM   rfm;
-  PTDBASE tdbp = NULL;
+  RECFM rfm;
+  PTDB  tdbp = NULL;
 
   // If define block not here yet, get it now
   if (!Pxdef && !(Pxdef = GetXdef(g)))
@@ -622,7 +641,7 @@ PTDB OEMDEF::GetTable(PGLOBAL g, MODE mode)
   /*  Allocate a TDB of the proper type.                               */
   /*  Column blocks will be allocated only when needed.                */
   /*********************************************************************/
-  if (!(tdbp = (PTDBASE)Pxdef->GetTable(g, mode)))
+  if (!(tdbp = Pxdef->GetTable(g, mode)))
     return NULL;
   else
     rfm = tdbp->GetFtype();
@@ -655,15 +674,15 @@ PTDB OEMDEF::GetTable(PGLOBAL g, MODE mode)
   /*********************************************************************/
   if (!((PTDBDOS)tdbp)->GetTxfp()) {
     if (cmpr) {
-#if defined(ZIP_SUPPORT)
+#if defined(GZ_SUPPORT)
       if (cmpr == 1)
-        txfp = new(g) ZIPFAM(defp);
+        txfp = new(g) GZFAM(defp);
       else
         txfp = new(g) ZLBFAM(defp);
-#else   // !ZIP_SUPPORT
+#else   // !GZ_SUPPORT
       strcpy(g->Message, "Compress not supported");
       return NULL;
-#endif  // !ZIP_SUPPORT
+#endif  // !GZ_SUPPORT
     } else if (rfm == RECFM_VAR) {
       if (map)
         txfp = new(g) MAPFAM(defp);
@@ -675,16 +694,19 @@ PTDB OEMDEF::GetTable(PGLOBAL g, MODE mode)
         txfp = new(g) MPXFAM(defp);
       else
         txfp = new(g) FIXFAM(defp);
-
     } else if (rfm == RECFM_VCT) {
-      assert (Pxdef->GetDefType() == TYPE_AM_VCT);
+#if defined(VCT_SUPPORT)
+			assert(Pxdef->GetDefType() == TYPE_AM_VCT);
 
       if (map)
         txfp = new(g) VCMFAM((PVCTDEF)defp);
       else
         txfp = new(g) VCTFAM((PVCTDEF)defp);
-
-    } // endif's
+#else   // !VCT_SUPPORT
+			strcpy(g->Message, "VCT no more supported");
+			return NULL;
+#endif  // !VCT_SUPPORT
+		} // endif's
 
     ((PTDBDOS)tdbp)->SetTxfp(txfp);
     } // endif Txfp

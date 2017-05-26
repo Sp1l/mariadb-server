@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2002, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2011, 2013, Monty Program Ab
+   Copyright (c) 2002, 2016, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2017, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -120,6 +120,7 @@ sp_get_item_value(THD *thd, Item *item, String *str)
     if (item->field_type() != MYSQL_TYPE_BIT)
       return item->val_str(str);
     else {/* Bit type is handled as binary string */}
+    /* fall through */
   case STRING_RESULT:
     {
       String *result= item->val_str(str);
@@ -216,6 +217,7 @@ sp_get_flags_for_command(LEX *lex)
   case SQLCOM_SHOW_CREATE_PROC:
   case SQLCOM_SHOW_CREATE_EVENT:
   case SQLCOM_SHOW_CREATE_TRIGGER:
+  case SQLCOM_SHOW_CREATE_USER:
   case SQLCOM_SHOW_DATABASES:
   case SQLCOM_SHOW_ERRORS:
   case SQLCOM_SHOW_EXPLAIN:
@@ -252,6 +254,7 @@ sp_get_flags_for_command(LEX *lex)
     statement within an IF condition.
   */
   case SQLCOM_EXECUTE:
+  case SQLCOM_EXECUTE_IMMEDIATE:
     flags= sp_head::MULTI_RESULTS | sp_head::CONTAINS_DYNAMIC_SQL;
     break;
   case SQLCOM_PREPARE:
@@ -283,6 +286,7 @@ sp_get_flags_for_command(LEX *lex)
   case SQLCOM_CREATE_USER:
   case SQLCOM_CREATE_ROLE:
   case SQLCOM_ALTER_TABLE:
+  case SQLCOM_ALTER_USER:
   case SQLCOM_GRANT:
   case SQLCOM_GRANT_ROLE:
   case SQLCOM_REVOKE:
@@ -512,18 +516,16 @@ sp_name::init_qname(THD *thd)
 bool
 check_routine_name(LEX_STRING *ident)
 {
-  if (!ident || !ident->str || !ident->str[0] ||
-      ident->str[ident->length-1] == ' ')
+  DBUG_ASSERT(ident);
+  DBUG_ASSERT(ident->str);
+
+  if (!ident->str[0] || ident->str[ident->length-1] == ' ')
   {
     my_error(ER_SP_WRONG_NAME, MYF(0), ident->str);
     return TRUE;
   }
-  if (check_string_char_length(ident, 0, NAME_CHAR_LEN,
-                               system_charset_info, 1))
-  {
-    my_error(ER_TOO_LONG_IDENT, MYF(0), ident->str);
+  if (check_ident_length(ident))
     return TRUE;
-  }
 
   return FALSE;
 }
@@ -703,6 +705,7 @@ sp_head::set_stmt_end(THD *thd)
 {
   Lex_input_stream *lip= & thd->m_parser_state->m_lip; /* shortcut */
   const char *end_ptr= lip->get_cpp_ptr(); /* shortcut */
+  uint not_used;
 
   /* Make the string of parameters. */
 
@@ -720,7 +723,7 @@ sp_head::set_stmt_end(THD *thd)
 
   m_body.length= end_ptr - m_body_begin;
   m_body.str= thd->strmake(m_body_begin, m_body.length);
-  trim_whitespace(thd->charset(), & m_body);
+  trim_whitespace(thd->charset(), &m_body, &not_used);
 
   /* Make the string of UTF-body. */
 
@@ -728,7 +731,7 @@ sp_head::set_stmt_end(THD *thd)
 
   m_body_utf8.length= lip->get_body_utf8_length();
   m_body_utf8.str= thd->strmake(lip->get_body_utf8_str(), m_body_utf8.length);
-  trim_whitespace(thd->charset(), & m_body_utf8);
+  trim_whitespace(thd->charset(), &m_body_utf8, &not_used);
 
   /*
     Make the string of whole stored-program-definition query (in the
@@ -737,7 +740,7 @@ sp_head::set_stmt_end(THD *thd)
 
   m_defstr.length= end_ptr - lip->get_cpp_buf();
   m_defstr.str= thd->strmake(lip->get_cpp_buf(), m_defstr.length);
-  trim_whitespace(thd->charset(), & m_defstr);
+  trim_whitespace(thd->charset(), &m_defstr, &not_used);
 }
 
 
@@ -2044,6 +2047,8 @@ sp_head::execute_procedure(THD *thd, List<Item> *args)
           break;
         }
       }
+
+      TRANSACT_TRACKER(add_trx_state_from_thd(thd));
     }
 
     /*
@@ -2406,7 +2411,7 @@ sp_head::do_cont_backpatch()
 
 void
 sp_head::set_info(longlong created, longlong modified,
-                  st_sp_chistics *chistics, ulonglong sql_mode)
+                  st_sp_chistics *chistics, sql_mode_t sql_mode)
 {
   m_created= created;
   m_modified= modified;
@@ -2530,6 +2535,69 @@ bool check_show_routine_access(THD *thd, sp_head *sp, bool *full_access)
     return check_some_routine_access(thd, sp->m_db.str, sp->m_name.str,
                                      sp->m_type == TYPE_ENUM_PROCEDURE);
   return 0;
+}
+
+
+/**
+  Collect metadata for SHOW CREATE statement for stored routines.
+
+  @param thd  Thread context.
+  @param type         Stored routine type
+  @param type         Stored routine type
+                      (TYPE_ENUM_PROCEDURE or TYPE_ENUM_FUNCTION)
+
+  @return Error status.
+    @retval FALSE on success
+    @retval TRUE on error
+*/
+
+void
+sp_head::show_create_routine_get_fields(THD *thd, int type, List<Item> *fields)
+{
+  const char *col1_caption= type == TYPE_ENUM_PROCEDURE ?
+                            "Procedure" : "Function";
+
+  const char *col3_caption= type == TYPE_ENUM_PROCEDURE ?
+                            "Create Procedure" : "Create Function";
+
+  MEM_ROOT *mem_root= thd->mem_root;
+
+  /* Send header. */
+
+  fields->push_back(new (mem_root)
+                    Item_empty_string(thd, col1_caption, NAME_CHAR_LEN),
+                    mem_root);
+  fields->push_back(new (mem_root)
+                    Item_empty_string(thd, "sql_mode", 256),
+                    mem_root);
+
+  {
+    /*
+      NOTE: SQL statement field must be not less than 1024 in order not to
+      confuse old clients.
+    */
+
+    Item_empty_string *stmt_fld=
+      new (mem_root) Item_empty_string(thd, col3_caption, 1024);
+    stmt_fld->maybe_null= TRUE;
+
+    fields->push_back(stmt_fld, mem_root);
+  }
+
+  fields->push_back(new (mem_root)
+                   Item_empty_string(thd, "character_set_client",
+                                     MY_CS_NAME_SIZE),
+                   mem_root);
+
+  fields->push_back(new (mem_root)
+                   Item_empty_string(thd, "collation_connection",
+                                     MY_CS_NAME_SIZE),
+                   mem_root);
+
+  fields->push_back(new (mem_root)
+                   Item_empty_string(thd, "Database Collation",
+                                     MY_CS_NAME_SIZE),
+                   mem_root);
 }
 
 
@@ -2910,6 +2978,18 @@ sp_lex_keeper::reset_lex_and_exec_core(THD *thd, uint *nextp,
 
   reinit_stmt_before_use(thd, m_lex);
 
+#ifndef EMBEDDED_LIBRARY
+  /*
+    If there was instruction which changed tracking state,
+    the result of changed tracking state send to client in OK packed.
+    So it changes result sent to client and probably can be different
+    independent on query text. So we can't cache such results.
+  */
+  if ((thd->client_capabilities & CLIENT_SESSION_TRACK) &&
+      (thd->server_status & SERVER_SESSION_STATE_CHANGED))
+    thd->lex->safe_to_cache_query= 0;
+#endif
+
   if (open_tables)
     res= instr->exec_open_and_lock_tables(thd, m_lex->query_tables);
 
@@ -2986,6 +3066,9 @@ sp_lex_keeper::reset_lex_and_exec_core(THD *thd, uint *nextp,
     what is needed from the substatement gained
   */
   thd->transaction.stmt.modified_non_trans_table |= parent_modified_non_trans_table;
+
+  TRANSACT_TRACKER(add_trx_state_from_thd(thd));
+
   /*
     Unlike for PS we should not call Item's destructors for newly created
     items after execution of each instruction in stored routine. This is
@@ -3012,7 +3095,7 @@ int sp_instr::exec_open_and_lock_tables(THD *thd, TABLE_LIST *tables)
     Check whenever we have access to tables for this statement
     and open and lock them before executing instructions core function.
   */
-  if (open_temporary_tables(thd, tables) ||
+  if (thd->open_temporary_tables(tables) ||
       check_table_access(thd, SELECT_ACL, tables, FALSE, UINT_MAX, FALSE)
       || open_and_lock_tables(thd, tables, TRUE, 0))
     result= -1;
@@ -3066,23 +3149,23 @@ sp_instr_stmt::execute(THD *thd, uint *nextp)
                                           thd->query_length()) <= 0)
     {
       res= m_lex_keeper.reset_lex_and_exec_core(thd, nextp, FALSE, this);
+      bool log_slow= !res && thd->enable_slow_log;
 
-      if (thd->get_stmt_da()->is_eof())
-      {
-        /* Finalize server status flags after executing a statement. */
+      /* Finalize server status flags after executing a statement. */
+      if (log_slow || thd->get_stmt_da()->is_eof())
         thd->update_server_status();
 
+      if (thd->get_stmt_da()->is_eof())
         thd->protocol->end_statement();
-      }
 
       query_cache_end_of_result(thd);
 
       mysql_audit_general(thd, MYSQL_AUDIT_GENERAL_STATUS,
-                         thd->get_stmt_da()->is_error() ?
-                                thd->get_stmt_da()->sql_errno() : 0,
-                         command_name[COM_QUERY].str);
+                          thd->get_stmt_da()->is_error() ?
+                                 thd->get_stmt_da()->sql_errno() : 0,
+                          command_name[COM_QUERY].str);
 
-      if (!res && unlikely(thd->enable_slow_log))
+      if (log_slow)
         log_slow_statement(thd);
     }
     else
@@ -3211,7 +3294,8 @@ sp_instr_set::print(String *str)
   }
   str->qs_append(m_offset);
   str->qs_append(' ');
-  m_value->print(str, QT_ORDINARY);
+  m_value->print(str, enum_query_type(QT_ORDINARY |
+                                      QT_ITEM_ORIGINAL_FUNC_NULLIF));
 }
 
 
@@ -3243,9 +3327,11 @@ void
 sp_instr_set_trigger_field::print(String *str)
 {
   str->append(STRING_WITH_LEN("set_trigger_field "));
-  trigger_field->print(str, QT_ORDINARY);
+  trigger_field->print(str, enum_query_type(QT_ORDINARY |
+                                            QT_ITEM_ORIGINAL_FUNC_NULLIF));
   str->append(STRING_WITH_LEN(":="));
-  value->print(str, QT_ORDINARY);
+  value->print(str, enum_query_type(QT_ORDINARY |
+                                    QT_ITEM_ORIGINAL_FUNC_NULLIF));
 }
 
 /*
@@ -3371,7 +3457,8 @@ sp_instr_jump_if_not::print(String *str)
   str->qs_append('(');
   str->qs_append(m_cont_dest);
   str->qs_append(STRING_WITH_LEN(") "));
-  m_expr->print(str, QT_ORDINARY);
+  m_expr->print(str, enum_query_type(QT_ORDINARY |
+                                     QT_ITEM_ORIGINAL_FUNC_NULLIF));
 }
 
 
@@ -3467,7 +3554,8 @@ sp_instr_freturn::print(String *str)
   str->qs_append(STRING_WITH_LEN("freturn "));
   str->qs_append((uint)m_type);
   str->qs_append(' ');
-  m_value->print(str, QT_ORDINARY);
+  m_value->print(str, enum_query_type(QT_ORDINARY |
+                                      QT_ITEM_ORIGINAL_FUNC_NULLIF));
 }
 
 /*
@@ -3939,7 +4027,8 @@ sp_instr_set_case_expr::print(String *str)
   str->qs_append(STRING_WITH_LEN(") "));
   str->qs_append(m_case_expr_id);
   str->qs_append(' ');
-  m_case_expr->print(str, QT_ORDINARY);
+  m_case_expr->print(str, enum_query_type(QT_ORDINARY |
+                                          QT_ITEM_ORIGINAL_FUNC_NULLIF));
 }
 
 uint
@@ -4164,7 +4253,7 @@ sp_head::add_used_tables_to_table_list(THD *thd,
     if (stab->temp)
       continue;
 
-    if (!(tab_buff= (char *)thd->calloc(ALIGN_SIZE(sizeof(TABLE_LIST)) *
+    if (!(tab_buff= (char *)thd->alloc(ALIGN_SIZE(sizeof(TABLE_LIST)) *
                                         stab->lock_count)) ||
         !(key_buff= (char*)thd->memdup(stab->qname.str,
                                        stab->qname.length)))
@@ -4173,32 +4262,11 @@ sp_head::add_used_tables_to_table_list(THD *thd,
     for (uint j= 0; j < stab->lock_count; j++)
     {
       table= (TABLE_LIST *)tab_buff;
-
-      table->db= key_buff;
-      table->db_length= stab->db_length;
-      table->table_name= table->db + table->db_length + 1;
-      table->table_name_length= stab->table_name_length;
-      table->alias= table->table_name + table->table_name_length + 1;
-      table->lock_type= stab->lock_type;
-      table->cacheable_table= 1;
-      table->prelocking_placeholder= 1;
-      table->belong_to_view= belong_to_view;
-      table->trg_event_map= stab->trg_event_map;
-      /*
-        Since we don't allow DDL on base tables in prelocked mode it
-        is safe to infer the type of metadata lock from the type of
-        table lock.
-      */
-      table->mdl_request.init(MDL_key::TABLE, table->db, table->table_name,
-                              table->lock_type >= TL_WRITE_ALLOW_WRITE ?
-                              MDL_SHARED_WRITE : MDL_SHARED_READ,
-                              MDL_TRANSACTION);
-
-      /* Everyting else should be zeroed */
-
-      **query_tables_last_ptr= table;
-      table->prev_global= *query_tables_last_ptr;
-      *query_tables_last_ptr= &table->next_global;
+      table->init_one_table_for_prelocking(key_buff, stab->db_length,
+           key_buff + stab->db_length + 1, stab->table_name_length,
+           key_buff + stab->db_length + stab->table_name_length + 2,
+           stab->lock_type, true, belong_to_view, stab->trg_event_map,
+           query_tables_last_ptr);
 
       tab_buff+= ALIGN_SIZE(sizeof(TABLE_LIST));
       result= TRUE;

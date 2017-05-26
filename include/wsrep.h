@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #include <my_config.h>
 
@@ -31,6 +31,14 @@
   if (WSREP_ON && (WSREP(thd) || (thd && thd->wsrep_exec_mode==TOTAL_ORDER))) \
     wsrep_to_isolation_end(thd);
 
+/*
+  Checks if lex->no_write_to_binlog is set for statements that use LOCAL or
+  NO_WRITE_TO_BINLOG.
+*/
+#define WSREP_TO_ISOLATION_BEGIN_WRTCHK(db_, table_, table_list_)                   \
+  if (WSREP(thd) && !thd->lex->no_write_to_binlog                                   \
+         && wsrep_to_isolation_begin(thd, db_, table_, table_list_)) goto error;
+
 #define WSREP_DEBUG(...)                                                \
     if (wsrep_debug)     WSREP_LOG(sql_print_information, ##__VA_ARGS__)
 #define WSREP_INFO(...)  WSREP_LOG(sql_print_information, ##__VA_ARGS__)
@@ -46,6 +54,7 @@
 #define WSREP_ERROR(...)
 #define WSREP_TO_ISOLATION_BEGIN(db_, table_, table_list_)
 #define WSREP_TO_ISOLATION_END
+#define WSREP_TO_ISOLATION_BEGIN_WRTCHK(db_, table_, table_list_)
 #endif
 
 #endif /* WSERP_INCLUDED */

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2006, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2015, MariaDB
+   Copyright (c) 2010, 2017, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -37,7 +37,7 @@
 #endif
 
 static int phase = 0;
-static int phases_total = 6;
+static const int phases_total = 7;
 static char mysql_path[FN_REFLEN];
 static char mysqlcheck_path[FN_REFLEN];
 
@@ -68,6 +68,8 @@ static char *default_dbug_option= (char*) "d:t:O,/tmp/mysql_upgrade.trace";
 static char **defaults_argv;
 
 static my_bool not_used; /* Can't use GET_BOOL without a value pointer */
+
+char upgrade_from_version[sizeof("10.20.456-MariaDB")+1];
 
 static my_bool opt_write_binlog;
 
@@ -184,7 +186,8 @@ static const char *load_default_groups[]=
 static void free_used_memory(void)
 {
   /* Free memory allocated by 'load_defaults' */
-  free_defaults(defaults_argv);
+  if (defaults_argv)
+    free_defaults(defaults_argv);
 
   dynstr_free(&ds_args);
   dynstr_free(&conn_args);
@@ -544,7 +547,7 @@ static int run_query(const char *query, DYNAMIC_STRING *ds_res,
     But mysql_upgrade is tightly bound to a specific server version
     anyway - it was mysql_fix_privilege_tables_sql script embedded
     into its binary - so even if it won't assume anything about server
-    wsrep-ness, it won't be any less server-dependend.
+    wsrep-ness, it won't be any less server-dependent.
   */
   const uchar sql_log_bin[]= "SET SQL_LOG_BIN=0, WSREP_ON=OFF;";
 #else
@@ -657,7 +660,7 @@ static int get_upgrade_info_file_name(char* name)
 /*
   Read the content of mysql_upgrade_info file and
   compare the version number form file against
-  version number wich mysql_upgrade was compiled for
+  version number which mysql_upgrade was compiled for
 
   NOTE
   This is an optimization to avoid running mysql_upgrade
@@ -674,7 +677,6 @@ static int upgrade_already_done(void)
 {
   FILE *in;
   char upgrade_info_file[FN_REFLEN]= {0};
-  char buf[sizeof(MYSQL_SERVER_VERSION)+1];
 
   if (get_upgrade_info_file_name(upgrade_info_file))
     return 0; /* Could not get filename => not sure */
@@ -682,15 +684,15 @@ static int upgrade_already_done(void)
   if (!(in= my_fopen(upgrade_info_file, O_RDONLY, MYF(0))))
     return 0; /* Could not open file => not sure */
 
-  bzero(buf, sizeof(buf));
-  if (!fgets(buf, sizeof(buf), in))
+  bzero(upgrade_from_version, sizeof(upgrade_from_version));
+  if (!fgets(upgrade_from_version, sizeof(upgrade_from_version), in))
   {
     /* Ignore, will be detected by strncmp() below */
   }
 
   my_fclose(in, MYF(0));
 
-  return (strncmp(buf, MYSQL_SERVER_VERSION,
+  return (strncmp(upgrade_from_version, MYSQL_SERVER_VERSION,
                   sizeof(MYSQL_SERVER_VERSION)-1)==0);
 }
 
@@ -755,9 +757,8 @@ static void print_conn_args(const char *tool_name)
     verbose("Running '%s with default connection arguments", tool_name);
 }  
 
-
 /*
-  Check and upgrade(if neccessary) all tables
+  Check and upgrade(if necessary) all tables
   in the server using "mysqlcheck --check-upgrade .."
 */
 
@@ -924,6 +925,80 @@ static void print_line(char* line)
   fputc('\n', stderr);
 }
 
+static my_bool from_before_10_1()
+{
+  my_bool ret= TRUE;
+  DYNAMIC_STRING ds_events_struct;
+
+  if (upgrade_from_version[0])
+  {
+    return upgrade_from_version[1] == '.' ||
+           strncmp(upgrade_from_version, "10.1.", 5) < 0;
+  }
+
+  if (init_dynamic_string(&ds_events_struct, NULL, 2048, 2048))
+    die("Out of memory");
+
+  if (run_query("show create table mysql.user", &ds_events_struct, FALSE) ||
+      strstr(ds_events_struct.str, "default_role") != NULL)
+    ret= FALSE;
+  else
+    verbose("Upgrading from a version before MariaDB-10.1");
+
+  dynstr_free(&ds_events_struct);
+  return ret;
+}
+
+
+/*
+  Check for entries with "Unknown storage engine" in I_S.TABLES,
+  try to load plugins for these tables if available (MDEV-11942)
+*/
+static int install_used_engines(void)
+{
+  char buf[512];
+  DYNAMIC_STRING ds_result;
+  const char *query = "SELECT DISTINCT LOWER(engine) FROM information_schema.tables"
+                      " WHERE table_comment LIKE 'Unknown storage engine%'";
+
+  if (opt_systables_only || !from_before_10_1())
+  {
+    verbose("Phase %d/%d: Installing used storage engines... Skipped", ++phase, phases_total);
+    return 0;
+  }
+  verbose("Phase %d/%d: Installing used storage engines", ++phase, phases_total);
+
+  if (init_dynamic_string(&ds_result, "", 512, 512))
+    die("Out of memory");
+
+  verbose("Checking for tables with unknown storage engine");
+
+  run_query(query, &ds_result, TRUE);
+
+  if (ds_result.length)
+  {
+    char *line= ds_result.str, *next=get_line(line);
+    do
+    {
+      if (next[-1] == '\n')
+        next[-1]=0;
+
+      verbose("installing plugin for '%s' storage engine", line);
+
+      // we simply assume soname=ha_enginename
+      strxnmov(buf, sizeof(buf)-1, "install soname 'ha_", line, "'", NULL);
+
+
+      if (run_query(buf, NULL, TRUE))
+        fprintf(stderr, "... can't %s\n", buf);
+      line=next;
+      next=get_line(line);
+    } while (*line);
+  }
+  dynstr_free(&ds_result);
+  return 0;
+}
+
 
 /*
   Update all system tables in MySQL Server to current
@@ -1055,7 +1130,7 @@ static int check_version_match(void)
 
 int main(int argc, char **argv)
 {
-  char self_name[FN_REFLEN];
+  char self_name[FN_REFLEN + 1];
 
   MY_INIT(argv[0]);
 
@@ -1063,7 +1138,7 @@ int main(int argc, char **argv)
   if (GetModuleFileName(NULL, self_name, FN_REFLEN) == 0)
 #endif
   {
-    strncpy(self_name, argv[0], FN_REFLEN);
+    strmake_buf(self_name, argv[0]);
   }
 
   if (init_dynamic_string(&ds_args, "", 512, 256) ||
@@ -1110,7 +1185,6 @@ int main(int argc, char **argv)
   if (opt_systables_only && !opt_silent)
     printf("The --upgrade-system-tables option was used, user tables won't be touched.\n");
 
-
   /*
     Read the mysql_upgrade_info file to check if mysql_upgrade
     already has been run for this installation of MySQL
@@ -1132,6 +1206,7 @@ int main(int argc, char **argv)
     Run "mysqlcheck" and "mysql_fix_privilege_tables.sql"
   */
   if (run_mysqlcheck_upgrade(TRUE) ||
+      install_used_engines() ||
       run_mysqlcheck_views() ||
       run_sql_fix_privilege_tables() ||
       run_mysqlcheck_fixnames() ||
@@ -1154,4 +1229,3 @@ end:
   my_end(my_end_arg);
   exit(0);
 }
-

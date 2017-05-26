@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2012, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -1133,7 +1133,7 @@ trx_undo_rec_get_partial_row(
 /***********************************************************************//**
 Erases the unused undo log page end.
 @return TRUE if the page contained something, FALSE if it was empty */
-static __attribute__((nonnull))
+static MY_ATTRIBUTE((nonnull))
 ibool
 trx_undo_erase_page_end(
 /*====================*/
@@ -1159,7 +1159,7 @@ byte*
 trx_undo_parse_erase_page_end(
 /*==========================*/
 	byte*	ptr,	/*!< in: buffer */
-	byte*	end_ptr __attribute__((unused)), /*!< in: buffer end */
+	byte*	end_ptr MY_ATTRIBUTE((unused)), /*!< in: buffer end */
 	page_t*	page,	/*!< in: page or NULL */
 	mtr_t*	mtr)	/*!< in: mtr or NULL */
 {
@@ -1186,10 +1186,6 @@ UNIV_INTERN
 dberr_t
 trx_undo_report_row_operation(
 /*==========================*/
-	ulint		flags,		/*!< in: if BTR_NO_UNDO_LOG_FLAG bit is
-					set, does nothing */
-	ulint		op_type,	/*!< in: TRX_UNDO_INSERT_OP or
-					TRX_UNDO_MODIFY_OP */
 	que_thr_t*	thr,		/*!< in: query thread */
 	dict_index_t*	index,		/*!< in: clustered index */
 	const dtuple_t*	clust_entry,	/*!< in: in the case of an insert,
@@ -1223,16 +1219,8 @@ trx_undo_report_row_operation(
 	ut_a(dict_index_is_clust(index));
 	ut_ad(!rec || rec_offs_validate(rec, index, offsets));
 
-	if (flags & BTR_NO_UNDO_LOG_FLAG) {
-
-		*roll_ptr = 0;
-
-		return(DB_SUCCESS);
-	}
-
 	ut_ad(thr);
-	ut_ad((op_type != TRX_UNDO_INSERT_OP)
-	      || (clust_entry && !update && !rec));
+	ut_ad(!clust_entry || (!update && !rec));
 
 	trx = thr_get_trx(thr);
 
@@ -1253,8 +1241,7 @@ trx_undo_report_row_operation(
 
 	/* If the undo log is not assigned yet, assign one */
 
-	switch (op_type) {
-	case TRX_UNDO_INSERT_OP:
+	if (clust_entry) {
 		undo = trx->insert_undo;
 
 		if (undo == NULL) {
@@ -1270,10 +1257,7 @@ trx_undo_report_row_operation(
 
 			ut_ad(err == DB_SUCCESS);
 		}
-		break;
-	default:
-		ut_ad(op_type == TRX_UNDO_MODIFY_OP);
-
+	} else {
 		undo = trx->update_undo;
 
 		if (undo == NULL) {
@@ -1297,23 +1281,15 @@ trx_undo_report_row_operation(
 	buf_block_dbg_add_level(undo_block, SYNC_TRX_UNDO_PAGE);
 
 	do {
-		page_t*		undo_page;
-		ulint		offset;
-
-		undo_page = buf_block_get_frame(undo_block);
 		ut_ad(page_no == buf_block_get_page_no(undo_block));
 
-		switch (op_type) {
-		case TRX_UNDO_INSERT_OP:
-			offset = trx_undo_page_report_insert(
-				undo_page, trx, index, clust_entry, &mtr);
-			break;
-		default:
-			ut_ad(op_type == TRX_UNDO_MODIFY_OP);
-			offset = trx_undo_page_report_modify(
+		page_t*	undo_page = buf_block_get_frame(undo_block);
+		ulint	offset = clust_entry
+			? trx_undo_page_report_insert(
+				undo_page, trx, index, clust_entry, &mtr)
+			: trx_undo_page_report_modify(
 				undo_page, trx, index, rec, offsets, update,
 				cmpl_info, &mtr);
-		}
 
 		if (UNIV_UNLIKELY(offset == 0)) {
 			/* The record did not fit on the page. We erase the
@@ -1364,7 +1340,7 @@ trx_undo_report_row_operation(
 			mutex_exit(&trx->undo_mutex);
 
 			*roll_ptr = trx_undo_build_roll_ptr(
-				op_type == TRX_UNDO_INSERT_OP,
+				clust_entry != NULL,
 				rseg->id, page_no, offset);
 			return(DB_SUCCESS);
 		}
@@ -1442,7 +1418,7 @@ NOTE: the caller must have latches on the clustered index page.
 @retval true if the undo log has been
 truncated and we cannot fetch the old version
 @retval false if the undo log record is available  */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 bool
 trx_undo_get_undo_rec(
 /*==================*/
@@ -1470,7 +1446,7 @@ trx_undo_get_undo_rec(
 #ifdef UNIV_DEBUG
 #define ATTRIB_USED_ONLY_IN_DEBUG
 #else /* UNIV_DEBUG */
-#define ATTRIB_USED_ONLY_IN_DEBUG	__attribute__((unused))
+#define ATTRIB_USED_ONLY_IN_DEBUG	MY_ATTRIBUTE((unused))
 #endif /* UNIV_DEBUG */
 
 /*******************************************************************//**

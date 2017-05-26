@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2001, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2013, Monty Program Ab.
+   Copyright (c) 2010, 2017, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -197,20 +197,6 @@
 */
 #define likely(x)	__builtin_expect(((x) != 0),1)
 #define unlikely(x)	__builtin_expect(((x) != 0),0)
-
-/*
-  now let's figure out if inline functions are supported
-  autoconf defines 'inline' to be empty, if not
-*/
-#define inline_test_1(X)        X ## 1
-#define inline_test_2(X)        inline_test_1(X)
-#if inline_test_2(inline) != 1
-#define HAVE_INLINE
-#else
-#error Compiler does not support inline!
-#endif
-#undef inline_test_2
-#undef inline_test_1
 
 /* Fix problem with S_ISLNK() on Linux */
 #if defined(TARGET_OS_LINUX) || defined(__GLIBC__)
@@ -452,7 +438,7 @@ extern "C" int madvise(void *addr, size_t len, int behav);
 #endif
 
 #ifndef STDERR_FILENO
-#define STDERR_FILENO 2
+#define STDERR_FILENO fileno(stderr)
 #endif
 
 #ifndef SO_EXT
@@ -691,7 +677,7 @@ typedef SOCKET_SIZE_TYPE size_socket;
   smaller what the disk page size. This influences the speed of the
   isam btree library. eg to big to slow.
 */
-#define IO_SIZE			4096
+#define IO_SIZE			4096U
 /*
   How much overhead does malloc have. The code often allocates
   something like 1024-MALLOC_OVERHEAD bytes
@@ -823,11 +809,15 @@ inline unsigned long long my_double2ulonglong(double d)
 #else
 #define finite(x) (1.0 / fabs(x) > 0.0)
 #endif /* HAVE_FINITE */
+#elif (__cplusplus >= 201103L)
+#include <cmath>
+static inline bool isfinite(double x) { return std::isfinite(x); }
 #endif /* isfinite */
 
 #ifndef HAVE_ISNAN
 #define isnan(x) ((x) != (x))
 #endif
+#define my_isnan(x) isnan(x)
 
 #ifdef HAVE_ISINF
 #define my_isinf(X) isinf(X)
@@ -889,8 +879,7 @@ typedef long long	my_ptrdiff_t;
   and related routines are refactored.
 */
 
-#define my_offsetof(TYPE, MEMBER) \
-        ((size_t)((char *)&(((TYPE *)0x10)->MEMBER) - (char*)0x10))
+#define my_offsetof(TYPE, MEMBER) PTR_BYTE_DIFF(&((TYPE *)0x10)->MEMBER, 0x10)
 
 #define NullS		(char *) 0
 
@@ -1082,14 +1071,14 @@ typedef ulong		myf;	/* Type of MyFlags in my_funcs */
 #ifdef _WIN32
 #define dlsym(lib, name) (void*)GetProcAddress((HMODULE)lib, name)
 #define dlopen(libname, unused) LoadLibraryEx(libname, NULL, 0)
+#define RTLD_DEFAULT GetModuleHandle(NULL)
 #define dlclose(lib) FreeLibrary((HMODULE)lib)
 static inline char *dlerror(void)
 {
   static char win_errormsg[2048];
-  if(FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,
-                   0, GetLastError(), 0, win_errormsg, 2048, NULL))
-    return win_errormsg;
-  return "";
+  FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,
+    0, GetLastError(), 0, win_errormsg, 2048, NULL);
+  return win_errormsg;
 }
 #define HAVE_DLOPEN 1
 #define HAVE_DLERROR 1
@@ -1241,6 +1230,33 @@ static inline double rint(double x)
 #if defined(_AIX) && defined(_LARGE_FILE_API)
 #undef _LARGE_FILE_API
 #undef __GNUG__
+#endif
+
+/*
+  Provide defaults for the CPU cache line size, if it has not been detected by
+  CMake using getconf
+*/
+#if !defined(CPU_LEVEL1_DCACHE_LINESIZE) || CPU_LEVEL1_DCACHE_LINESIZE == 0
+  #if CPU_LEVEL1_DCACHE_LINESIZE == 0
+    #undef CPU_LEVEL1_DCACHE_LINESIZE
+  #endif
+
+  #if defined(__s390__)
+    #define CPU_LEVEL1_DCACHE_LINESIZE 256
+  #elif defined(__powerpc__) || defined(__aarch64__)
+    #define CPU_LEVEL1_DCACHE_LINESIZE 128
+  #else
+    #define CPU_LEVEL1_DCACHE_LINESIZE 64
+  #endif
+#endif
+
+#define FLOATING_POINT_DECIMALS 31
+
+/* Keep client compatible with earlier versions */
+#ifdef MYSQL_SERVER
+#define NOT_FIXED_DEC           DECIMAL_NOT_SPECIFIED
+#else
+#define NOT_FIXED_DEC           FLOATING_POINT_DECIMALS
 #endif
 
 #endif /* my_global_h */

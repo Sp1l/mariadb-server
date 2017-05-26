@@ -11,7 +11,7 @@
 
   You should have received a copy of the GNU General Public License
   along with this program; if not, write to the Free Software
-  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #define MYSQL_SERVER 1
 #include "mysql_version.h"
@@ -737,7 +737,8 @@ int spider_db_errorno(
             "to %ld: %d %s\n",
             l_time->tm_year + 1900, l_time->tm_mon + 1, l_time->tm_mday,
             l_time->tm_hour, l_time->tm_min, l_time->tm_sec,
-            current_thd->thread_id, error_num, conn->db_conn->get_error());
+            (ulong) current_thd->thread_id, error_num,
+                  conn->db_conn->get_error());
         }
         if (!conn->mta_conn_mutex_unlock_later)
         {
@@ -757,7 +758,8 @@ int spider_db_errorno(
           "to %ld: %d %s\n",
           l_time->tm_year + 1900, l_time->tm_mon + 1, l_time->tm_mday,
           l_time->tm_hour, l_time->tm_min, l_time->tm_sec,
-          current_thd->thread_id, error_num, conn->db_conn->get_error());
+          (ulong) current_thd->thread_id, error_num,
+                conn->db_conn->get_error());
       }
       if (!conn->mta_conn_mutex_unlock_later)
       {
@@ -1368,7 +1370,7 @@ int spider_db_append_name_with_quote_str(
   for (name_end = name + length; name < name_end; name += length)
   {
     head_code = *name;
-    if (!(length = my_mbcharlen(system_charset_info, (uchar) head_code)))
+    if ((length= my_charlen(system_charset_info, name, name_end)) < 1)
     {
       my_message(ER_SPIDER_WRONG_CHARACTER_IN_NAME_NUM,
         ER_SPIDER_WRONG_CHARACTER_IN_NAME_STR, MYF(0));
@@ -1844,8 +1846,8 @@ int spider_db_append_key_where_internal(
 #if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100000
           case HA_READ_PREFIX_LAST:
             result_list->desc_flg = TRUE;
-            /* fall through */
 #endif
+            /* fall through */
           case HA_READ_KEY_EXACT:
             if (sql_kind == SPIDER_SQL_KIND_SQL)
             {
@@ -9294,7 +9296,7 @@ int spider_db_udf_ping_table(
     {
       int init_sql_alloc_size =
         spider_param_init_sql_alloc_size(trx->thd, share->init_sql_alloc_size);
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
       spider_string sql_str(init_sql_alloc_size);
       sql_str.set_charset(system_charset_info);
       spider_string where_str(init_sql_alloc_size);
@@ -9517,7 +9519,7 @@ int spider_db_udf_ping_table_mon_next(
   SPIDER_SHARE *share = table_mon->share;
   int init_sql_alloc_size =
     spider_param_init_sql_alloc_size(thd, share->init_sql_alloc_size);
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__SUNPRO_CC)
   spider_string sql_str(init_sql_alloc_size);
   sql_str.set_charset(thd->variables.character_set_client);
 #else

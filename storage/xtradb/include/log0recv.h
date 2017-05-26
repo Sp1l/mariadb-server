@@ -1,6 +1,7 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1997, 2016, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -43,7 +44,8 @@ UNIV_INTERN
 ibool
 log_block_checksum_is_ok_or_old_format(
 /*===================================*/
-	const byte*	block);	/*!< in: pointer to a log block */
+	const byte*	block,	/*!< in: pointer to a log block */
+	bool		print_err); /*!< in print error ? */
 
 /*******************************************************//**
 Calculates the new value for lsn when more data is added to the log. */
@@ -73,7 +75,7 @@ recv_read_checkpoint_info_for_backup(
 	lsn_t*		first_header_lsn)
 				/*!< out: lsn of of the start of the
 				first log file */
-	__attribute__((nonnull));
+	MY_ATTRIBUTE((nonnull));
 /*******************************************************************//**
 Scans the log segment and n_bytes_scanned is set to the length of valid
 log scanned. */
@@ -100,15 +102,6 @@ UNIV_INLINE
 ibool
 recv_recovery_is_on(void);
 /*=====================*/
-#ifdef UNIV_LOG_ARCHIVE
-/*******************************************************************//**
-Returns TRUE if recovery from backup is currently running.
-@return	recv_recovery_from_backup_on */
-UNIV_INLINE
-ibool
-recv_recovery_from_backup_is_on(void);
-/*=================================*/
-#endif /* UNIV_LOG_ARCHIVE */
 /************************************************************************//**
 Applies the hashed log records to the page, if the page lsn is less than the
 lsn of a log record. This can be called when a buffer page has just been
@@ -308,20 +301,12 @@ void
 recv_sys_var_init(void);
 /*===================*/
 #endif /* !UNIV_HOTBACKUP */
-/*******************************************************************//**
-Empties the hash table of stored log records, applying them to appropriate
-pages. */
+/** Apply the hash table of stored log records to persistent data pages.
+@param[in]	last_batch	whether the change buffer merge will be
+				performed as part of the operation */
 UNIV_INTERN
-dberr_t
-recv_apply_hashed_log_recs(
-/*=======================*/
-	ibool	allow_ibuf);	/*!< in: if TRUE, also ibuf operations are
-				allowed during the application; if FALSE,
-				no ibuf operations are allowed, and after
-				the application all file pages are flushed to
-				disk and invalidated in buffer pool: this
-				alternative means that no new log records
-				can be generated during the application */
+void
+recv_apply_hashed_log_recs(bool last_batch);
 #ifdef UNIV_HOTBACKUP
 /*******************************************************************//**
 Applies log records in the hash table to a backup. */
@@ -330,30 +315,6 @@ void
 recv_apply_log_recs_for_backup(void);
 /*================================*/
 #endif
-#ifdef UNIV_LOG_ARCHIVE
-/********************************************************//**
-Recovers from archived log files, and also from log files, if they exist.
-@return	error code or DB_SUCCESS */
-UNIV_INTERN
-dberr_t
-recv_recovery_from_archive_start(
-/*=============================*/
-	lsn_t		min_flushed_lsn,/*!< in: min flushed lsn field from the
-					data files */
-	lsn_t		limit_lsn,	/*!< in: recover up to this lsn if
-					possible */
-	lsn_t		first_log_no);	/*!< in: number of the first archived
-					log file to use in the recovery; the
-					file will be searched from
-					INNOBASE_LOG_ARCH_DIR specified in
-					server config file */
-/********************************************************//**
-Completes recovery from archive. */
-UNIV_INTERN
-void
-recv_recovery_from_archive_finish(void);
-/*===================================*/
-#endif /* UNIV_LOG_ARCHIVE */
 
 /** Block of log record data */
 struct recv_data_t{
@@ -471,6 +432,8 @@ struct recv_sys_t{
 				scan find a corrupt log block, or a corrupt
 				log record, or there is a log parsing
 				buffer overflow */
+	/** the time when progress was last reported */
+	ib_time_t	progress_time;
 #ifdef UNIV_LOG_ARCHIVE
 	log_group_t*	archive_group;
 				/*!< in archive recovery: the log group whose
@@ -483,6 +446,20 @@ struct recv_sys_t{
 				addresses in the hash table */
 
 	recv_dblwr_t	dblwr;
+
+	/** Determine whether redo log recovery progress should be reported.
+	@param[in]	time	the current time
+	@return	whether progress should be reported
+		(the last report was at least 15 seconds ago) */
+	bool report(ib_time_t time)
+	{
+		if (time - progress_time < 15) {
+			return false;
+		}
+
+		progress_time = time;
+		return true;
+	}
 };
 
 /** The recovery system */

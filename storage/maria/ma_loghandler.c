@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #include "maria_def.h"
 #include "trnman.h"
@@ -54,7 +54,7 @@ static mysql_mutex_t LOCK_soft_sync;
 static mysql_cond_t  COND_soft_sync;
 /** @brief control structure for checkpoint background thread */
 static MA_SERVICE_THREAD_CONTROL soft_sync_control=
-  {THREAD_DEAD, FALSE, &LOCK_soft_sync, &COND_soft_sync};
+  {0, FALSE, FALSE, &LOCK_soft_sync, &COND_soft_sync};
 
 
 /* transaction log file descriptor */
@@ -946,6 +946,7 @@ static File create_logfile_by_number_no_cache(uint32 file_no)
   {
     DBUG_PRINT("error", ("Error %d during syncing directory '%s'",
                          errno, log_descriptor.directory));
+    mysql_file_close(file, MYF(0));
     translog_stop_writing();
     DBUG_RETURN(-1);
   }
@@ -1447,17 +1448,16 @@ LSN translog_get_file_max_lsn_stored(uint32 file)
     if (translog_read_file_header(&info, fd))
     {
       DBUG_PRINT("error", ("Can't read file header"));
-      DBUG_RETURN(LSN_ERROR);
+      info.max_lsn= LSN_ERROR;
     }
 
     if (mysql_file_close(fd, MYF(MY_WME)))
     {
       DBUG_PRINT("error", ("Can't close file"));
-      DBUG_RETURN(LSN_ERROR);
+      info.max_lsn= LSN_ERROR;
     }
 
-    DBUG_PRINT("info", ("Max lsn: (%lu,0x%lx)",
-                         LSN_IN_PARTS(info.max_lsn)));
+    DBUG_PRINT("info", ("Max lsn: (%lu,0x%lx)", LSN_IN_PARTS(info.max_lsn)));
     DBUG_RETURN(info.max_lsn);
   }
 }
@@ -1621,13 +1621,15 @@ static my_bool translog_create_new_file()
   if (allocate_dynamic(&log_descriptor.open_files,
                        log_descriptor.max_file - log_descriptor.min_file + 2))
     goto error_lock;
-  if ((file->handler.file=
-       create_logfile_by_number_no_cache(file_no)) == -1)
+
+  /* this call just expand the array */
+  if (insert_dynamic(&log_descriptor.open_files, (uchar*)&file))
+    goto error_lock;
+
+  if ((file->handler.file= create_logfile_by_number_no_cache(file_no)) == -1)
     goto error_lock;
   translog_file_init(file, file_no, 0);
 
-  /* this call just expand the array */
-  insert_dynamic(&log_descriptor.open_files, (uchar*)&file);
   log_descriptor.max_file++;
   {
     char *start= (char*) dynamic_element(&log_descriptor.open_files, 0,
@@ -1661,6 +1663,7 @@ error_lock:
   mysql_rwlock_unlock(&log_descriptor.open_files_lock);
 error:
   translog_stop_writing();
+  my_free(file);
   DBUG_RETURN(1);
 }
 
@@ -3962,11 +3965,14 @@ my_bool translog_init_with_table(const char *directory,
     /* Start new log system from scratch */
     log_descriptor.horizon= MAKE_LSN(start_file_num,
                                      TRANSLOG_PAGE_SIZE); /* header page */
-    if ((file->handler.file=
-         create_logfile_by_number_no_cache(start_file_num)) == -1)
-      goto err;
     translog_file_init(file, start_file_num, 0);
     if (insert_dynamic(&log_descriptor.open_files, (uchar*)&file))
+    {
+      my_free(file);
+      goto err;
+    }
+    if ((file->handler.file=
+         create_logfile_by_number_no_cache(start_file_num)) == -1)
       goto err;
     log_descriptor.min_file= log_descriptor.max_file= start_file_num;
     if (translog_write_file_header())
@@ -7789,8 +7795,24 @@ void translog_flush_buffers(TRANSLOG_ADDRESS *lsn,
     translog_force_current_buffer_to_finish();
     translog_buffer_unlock(buffer);
   }
-  else if (log_descriptor.bc.buffer->prev_last_lsn != LSN_IMPOSSIBLE)
+  else
   {
+    if (log_descriptor.bc.buffer->last_lsn == LSN_IMPOSSIBLE)
+    {
+      /*
+        In this case both last_lsn & prev_last_lsn are LSN_IMPOSSIBLE
+        otherwise it will go in the first IF because LSN_IMPOSSIBLE less
+        then any real LSN and cmp_translog_addr(*lsn,
+        log_descriptor.bc.buffer->prev_last_lsn) will be TRUE
+      */
+      DBUG_ASSERT(log_descriptor.bc.buffer->prev_last_lsn ==
+                  LSN_IMPOSSIBLE);
+      DBUG_PRINT("info", ("There is no LSNs yet generated => do nothing"));
+      translog_unlock();
+      DBUG_VOID_RETURN;
+    }
+
+    DBUG_ASSERT(log_descriptor.bc.buffer->prev_last_lsn != LSN_IMPOSSIBLE);
     /* fix lsn if it was horizon */
     *lsn= log_descriptor.bc.buffer->prev_last_lsn;
     DBUG_PRINT("info", ("LSN to flush fixed to prev last lsn: (%lu,0x%lx)",
@@ -7799,13 +7821,6 @@ void translog_flush_buffers(TRANSLOG_ADDRESS *lsn,
                      TRANSLOG_BUFFERS_NO);
     translog_unlock();
   }
-  else if (log_descriptor.bc.buffer->last_lsn == LSN_IMPOSSIBLE)
-  {
-    DBUG_PRINT("info", ("There is no LSNs yet generated => do nothing"));
-    translog_unlock();
-    DBUG_VOID_RETURN;
-  }
-
   /* flush buffers */
   *sent_to_disk= translog_get_sent_to_disk();
   if (cmp_translog_addr(*lsn, *sent_to_disk) > 0)
@@ -8790,7 +8805,6 @@ ma_soft_sync_background( void *arg __attribute__((unused)))
       if (my_service_thread_sleep(&soft_sync_control, sleep))
         break;
     }
-    my_service_thread_signal_end(&soft_sync_control);
     my_thread_end();
     DBUG_RETURN(0);
   }
@@ -8803,7 +8817,6 @@ ma_soft_sync_background( void *arg __attribute__((unused)))
 
 int translog_soft_sync_start(void)
 {
-  pthread_t th;
   int res= 0;
   uint32 min, max;
   DBUG_ENTER("translog_soft_sync_start");
@@ -8818,9 +8831,10 @@ int translog_soft_sync_start(void)
   soft_need_sync= 1;
 
   if (!(res= ma_service_thread_control_init(&soft_sync_control)))
-    if (!(res= mysql_thread_create(key_thread_soft_sync,
-                                   &th, NULL, ma_soft_sync_background, NULL)))
-      soft_sync_control.status= THREAD_RUNNING;
+    if ((res= mysql_thread_create(key_thread_soft_sync,
+                                  &soft_sync_control.thread, NULL,
+                                  ma_soft_sync_background, NULL)))
+      soft_sync_control.killed= TRUE;
   DBUG_RETURN(res);
 }
 

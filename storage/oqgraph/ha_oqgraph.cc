@@ -1,5 +1,6 @@
 /* Copyright (C) 2007-2015 Arjen G Lentz & Antony T Curtis for Open Query
    Copyright (C) 2013-2015 Andrew McDonnell
+   Copyright (C) 2014 Sergei Golubchik
    Portions of this file copyright (C) 2000-2006 MySQL AB
 
    This program is free software; you can redistribute it and/or modify
@@ -13,7 +14,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 /* ======================================================================
    Open Query Graph Computation Engine, based on a concept by Arjen Lentz
@@ -62,7 +63,7 @@
 #ifdef VERBOSE_DEBUG
 #else
 #undef DBUG_PRINT
-#define DBUG_PRINT(x ...)
+#define DBUG_PRINT(x,y)
 #endif
 
 #ifdef RETAIN_INT_LATCH_COMPATIBILITY
@@ -622,9 +623,8 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
   }
 
   if (enum open_frm_error err= open_table_from_share(thd, share, "",
-                            (uint) (HA_OPEN_KEYFILE | HA_OPEN_RNDFILE |
-                                    HA_GET_INDEX | HA_TRY_READ_ONLY),
-                            READ_KEYINFO | COMPUTE_TYPES | EXTRA_RECORD,
+                            (uint) (HA_OPEN_KEYFILE | HA_TRY_READ_ONLY),
+                            EXTRA_RECORD,
                             thd->open_options, edges, FALSE))
   {
     open_table_error(share, err, EMFILE); // NOTE - EMFILE is probably bogus, it reports as too many open files (!)
@@ -662,7 +662,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
     {
       fprint_error("Column '%s.%s' (origid) is not a not-null integer type",
           options->table_name, options->origid);
-      closefrm(edges, 0);
+      closefrm(edges);
       free_table_share(share);
       DBUG_RETURN(-1);
     }
@@ -672,7 +672,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
 
   if (!origid) {
     fprint_error("Invalid OQGRAPH backing store ('%s.origid' attribute not set to a valid column of '%s')", p+1, options->table_name);
-    closefrm(edges, 0);
+    closefrm(edges);
     free_table_share(share);
     DBUG_RETURN(-1);
   }
@@ -687,7 +687,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
     {
       fprint_error("Column '%s.%s' (destid) is not a not-null integer type or is a different type to origid attribute.",
           options->table_name, options->destid);
-      closefrm(edges, 0);
+      closefrm(edges);
       free_table_share(share);
       DBUG_RETURN(-1);
     }
@@ -697,7 +697,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
 
   if (!destid) {
     fprint_error("Invalid OQGRAPH backing store ('%s.destid' attribute not set to a valid column of '%s')", p+1, options->table_name);
-    closefrm(edges, 0);
+    closefrm(edges);
     free_table_share(share);
     DBUG_RETURN(-1);
   }
@@ -705,7 +705,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
   // Make sure origid column != destid column
   if (strcmp( origid->field_name, destid->field_name)==0) {
     fprint_error("Invalid OQGRAPH backing store ('%s.destid' attribute set to same column as origid attribute)", p+1, options->table_name);
-    closefrm(edges, 0);
+    closefrm(edges);
     free_table_share(share);
     DBUG_RETURN(-1);
   }
@@ -719,7 +719,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
     {
       fprint_error("Column '%s.%s' (weight) is not a not-null real type",
           options->table_name, options->weight);
-      closefrm(edges, 0);
+      closefrm(edges);
       free_table_share(share);
       DBUG_RETURN(-1);
     }
@@ -729,7 +729,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
 
   if (!weight && options->weight) {
     fprint_error("Invalid OQGRAPH backing store ('%s.weight' attribute not set to a valid column of '%s')", p+1, options->table_name);
-    closefrm(edges, 0);
+    closefrm(edges);
     free_table_share(share);
     DBUG_RETURN(-1);
   }
@@ -737,7 +737,7 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
   if (!(graph_share = oqgraph::create(edges, origid, destid, weight)))
   {
     fprint_error("Unable to create graph instance.");
-    closefrm(edges, 0);
+    closefrm(edges);
     free_table_share(share);
     DBUG_RETURN(-1);
   }
@@ -752,13 +752,17 @@ int ha_oqgraph::open(const char *name, int mode, uint test_if_locked)
 int ha_oqgraph::close(void)
 {
   DBUG_PRINT( "oq-debug", ("close()"));
+  if (graph->get_thd() != current_thd) {
+    DBUG_PRINT( "oq-debug", ("index_next_same g->table->in_use: 0x%lx <-- current_thd 0x%lx", (long) graph->get_thd(), (long) current_thd));
+    graph->set_thd(current_thd);
+  }
   oqgraph::free(graph); graph= 0;
   oqgraph::free(graph_share); graph_share= 0;
 
   if (have_table_share)
   {
     if (edges->file)
-      closefrm(edges, 0);
+      closefrm(edges);
     free_table_share(share);
     have_table_share = false;
   }
@@ -1131,6 +1135,10 @@ int ha_oqgraph::info(uint flag)
 
 int ha_oqgraph::extra(enum ha_extra_function operation)
 {
+  if (graph->get_thd() != ha_thd()) {
+    DBUG_PRINT( "oq-debug", ("rnd_pos g->table->in_use: 0x%lx <-- current_thd 0x%lx", (long) graph->get_thd(), (long) current_thd));
+    graph->set_thd(current_thd);
+  }
   return edges->file->extra(operation);
 }
 
@@ -1371,6 +1379,6 @@ maria_declare_plugin(oqgraph)
   oqgraph_status,                /* status variables             */
   oqgraph_sysvars,               /* system variables             */
   "3.0",
-  MariaDB_PLUGIN_MATURITY_BETA
+  MariaDB_PLUGIN_MATURITY_GAMMA
 }
 maria_declare_plugin_end;

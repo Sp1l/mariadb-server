@@ -88,6 +88,7 @@
 #cmakedefine HAVE_SYS_UN_H 1
 #cmakedefine HAVE_SYS_VADVISE_H 1
 #cmakedefine HAVE_SYS_STATVFS_H 1
+#cmakedefine HAVE_UCONTEXT_H 1
 #cmakedefine HAVE_TERM_H 1
 #cmakedefine HAVE_TERMBITS_H 1
 #cmakedefine HAVE_TERMIOS_H 1
@@ -104,6 +105,8 @@
 /* Libraries */
 #cmakedefine HAVE_LIBWRAP 1
 #cmakedefine HAVE_SYSTEMD 1
+#cmakedefine HAVE_CRC32_VPMSUM 1
+
 /* Does "struct timespec" have a "sec" and "nsec" field? */
 #cmakedefine HAVE_TIMESPEC_TS_SEC 1
 
@@ -188,6 +191,7 @@
 #cmakedefine HAVE_PREAD 1
 #cmakedefine HAVE_PAUSE_INSTRUCTION 1
 #cmakedefine HAVE_FAKE_PAUSE_INSTRUCTION 1
+#cmakedefine HAVE_HMT_PRIORITY_INSTRUCTION 1
 #cmakedefine HAVE_RDTSCLL 1
 #cmakedefine HAVE_READ_REAL_TIME 1
 #cmakedefine HAVE_PTHREAD_ATTR_CREATE 1
@@ -236,7 +240,6 @@
 #cmakedefine HAVE_THR_YIELD 1
 #cmakedefine HAVE_TIME 1
 #cmakedefine HAVE_TIMES 1
-#cmakedefine HAVE_UCONTEXT 1
 #cmakedefine HAVE_VIDATTR 1
 #define HAVE_VIO_READ_BUFF 1
 #cmakedefine HAVE_VASPRINTF 1
@@ -398,7 +401,6 @@
 #cmakedefine _LARGE_FILES 1
 #cmakedefine _LARGEFILE_SOURCE 1
 #cmakedefine _LARGEFILE64_SOURCE 1
-#cmakedefine _FILE_OFFSET_BITS @_FILE_OFFSET_BITS@
 
 #cmakedefine TIME_WITH_SYS_TIME 1
 
@@ -572,23 +574,6 @@
   Explicitly request format macros before the first inclusion of inttypes.h
 */
 #define __STDC_FORMAT_MACROS
-#endif
-
-/*
-  stat structure (from <sys/stat.h>) is conditionally defined
-  to have different layout and size depending on the defined macros.
-  The correct macro is defined in my_config.h, which means it MUST be
-  included first (or at least before <features.h> - so, practically,
-  before including any system headers).
-
-  Check the include order by looking at __GLIBC__ (defined in <features.h>)
-
-  But we cannot force all third-party clients/connectors to include
-  my_config.h first. So, their crashes are their responsibility,
-  we enable this check only for MariaDB sources (SAFE_MUTEX check).
-*/
-#if defined(__GLIBC__) && defined(SAFE_MUTEX)
-#error <my_config.h> MUST be included first!
 #endif
 
 #endif

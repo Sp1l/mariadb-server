@@ -18,6 +18,7 @@
 #include "sql_priv.h"
 #include "unireg.h"
 #include "sql_base.h"                           // close_thread_tables
+#include "sql_parse.h"
 #include "event_db_repository.h"
 #include "key.h"                                // key_copy
 #include "sql_db.h"                        // get_default_db_collation
@@ -166,20 +167,8 @@ const TABLE_FIELD_TYPE event_table_fields[ET_FIELD_COUNT] =
 static const TABLE_FIELD_DEF
 event_table_def= {ET_FIELD_COUNT, event_table_fields, 0, (uint*) 0};
 
-class Event_db_intact : public Table_check_intact
-{
-protected:
-  void report_error(uint, const char *fmt, ...)
-  {
-    va_list args;
-    va_start(args, fmt);
-    error_log_print(ERROR_LEVEL, fmt, args);
-    va_end(args);
-  }
-};
-
 /** In case of an error, a message is printed to the error log. */
-static Event_db_intact table_intact;
+static Table_check_intact_log_error table_intact;
 
 
 /**
@@ -202,7 +191,7 @@ mysql_event_fill_row(THD *thd,
                      TABLE *table,
                      Event_parse_data *et,
                      sp_head *sp,
-                     ulonglong sql_mode,
+                     sql_mode_t sql_mode,
                      my_bool is_update)
 {
   CHARSET_INFO *scs= system_charset_info;
@@ -499,7 +488,8 @@ Event_db_repository::table_scan_all_for_i_s(THD *thd, TABLE *schema_table,
   READ_RECORD read_record_info;
   DBUG_ENTER("Event_db_repository::table_scan_all_for_i_s");
 
-  if (init_read_record(&read_record_info, thd, event_table, NULL, 1, 0, FALSE))
+  if (init_read_record(&read_record_info, thd, event_table, NULL, NULL, 1, 0,
+                       FALSE))
     DBUG_RETURN(TRUE);
 
   /*
@@ -657,7 +647,7 @@ Event_db_repository::create_event(THD *thd, Event_parse_data *parse_data,
   int ret= 1;
   TABLE *table= NULL;
   sp_head *sp= thd->lex->sphead;
-  ulonglong saved_mode= thd->variables.sql_mode;
+  sql_mode_t saved_mode= thd->variables.sql_mode;
   /*
     Take a savepoint to release only the lock on mysql.event
     table at the end but keep the global read lock and
@@ -713,19 +703,17 @@ Event_db_repository::create_event(THD *thd, Event_parse_data *parse_data,
 
   restore_record(table, s->default_values);     // Get default values for fields
 
-  if (system_charset_info->cset->
-        numchars(system_charset_info, parse_data->dbname.str,
-                 parse_data->dbname.str + parse_data->dbname.length) >
-      table->field[ET_FIELD_DB]->char_length())
+  if (check_string_char_length(&parse_data->dbname, 0,
+                               table->field[ET_FIELD_DB]->char_length(),
+                               system_charset_info, 1))
   {
     my_error(ER_TOO_LONG_IDENT, MYF(0), parse_data->dbname.str);
     goto end;
   }
 
-  if (system_charset_info->cset->
-        numchars(system_charset_info, parse_data->name.str,
-                 parse_data->name.str + parse_data->name.length) >
-      table->field[ET_FIELD_NAME]->char_length())
+  if (check_string_char_length(&parse_data->name, 0,
+                               table->field[ET_FIELD_NAME]->char_length(),
+                               system_charset_info, 1))
   {
     my_error(ER_TOO_LONG_IDENT, MYF(0), parse_data->name.str);
     goto end;
@@ -786,7 +774,7 @@ Event_db_repository::update_event(THD *thd, Event_parse_data *parse_data,
   CHARSET_INFO *scs= system_charset_info;
   TABLE *table= NULL;
   sp_head *sp= thd->lex->sphead;
-  ulonglong saved_mode= thd->variables.sql_mode;
+  sql_mode_t saved_mode= thd->variables.sql_mode;
   /*
     Take a savepoint to release only the lock on mysql.event
     table at the end but keep the global read lock and
@@ -947,7 +935,7 @@ end:
 
 
   @retval FALSE  an event with such db/name key exists
-  @retval  TRUE   no record found or an error occured.
+  @retval  TRUE   no record found or an error occurred.
 */
 
 bool
@@ -1015,7 +1003,7 @@ Event_db_repository::drop_schema_events(THD *thd, LEX_STRING schema)
     DBUG_VOID_RETURN;
 
   /* only enabled events are in memory, so we go now and delete the rest */
-  if (init_read_record(&read_record_info, thd, table, NULL, 1, 0, FALSE))
+  if (init_read_record(&read_record_info, thd, table, NULL, NULL, 1, 0, FALSE))
     goto end;
 
   while (!ret && !(read_record_info.read_record(&read_record_info)) )

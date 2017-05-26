@@ -3,16 +3,19 @@
 *.reject
 *.spec
 *.bak
+*.dgcov
+*.rpm
 .*.swp
 *.ninja
 .ninja_*
 .gdb_history
 errmsg.sys
 typescript
+_CPack_Packages
 CMakeCache.txt
 CMakeFiles/
 MakeFile
-install_manifest.txt
+install_manifest*.txt
 CPackConfig.cmake
 CPackSourceConfig.cmake
 CTestTestfile.cmake
@@ -21,6 +24,7 @@ Docs/INFO_SRC
 Makefile
 TAGS
 Testing/
+tmp/
 VERSION.dep
 configure
 client/async_example
@@ -45,8 +49,11 @@ extra/comp_err
 extra/innochecksum
 extra/jemalloc/build/
 extra/jemalloc/tmp/
+extra/mariabackup/mariabackup
+extra/mariabackup/mbstream
 extra/my_print_defaults
 extra/mysql_waitpid
+extra/mysqld_safe_helper
 extra/perror
 extra/replace
 extra/resolve_stack_dump
@@ -59,6 +66,9 @@ include/mysql_version.h
 include/mysqld_ername.h
 include/mysqld_error.h
 include/sql_state.h
+include/probes_mysql.d
+include/probes_mysql_dtrace.h
+include/probes_mysql_nodtrace.h
 info_macros.cmake
 libmysql*/libmysql*_exports_file.cc
 libmysql*/merge_archives_mysql*.cmake
@@ -74,6 +84,9 @@ mysql-test/lib/My/SafeProcess/my_safe_process
 mysql-test/mtr
 mysql-test/mysql-test-run
 mysql-test/var
+mysql-test-gcov.err
+mysql-test-gcov.msg
+mysys/test_hash
 mysys/thr_lock
 mysys/thr_timer
 packaging/rpm-oel/mysql.spec
@@ -86,6 +99,9 @@ pcre/pcre_chartables.c
 pcre/pcregrep
 pcre/pcretest
 pcre/test*grep
+plugin/aws_key_management/aws-sdk-cpp
+plugin/aws_key_management/aws_sdk_cpp
+plugin/aws_key_management/aws_sdk_cpp-prefix
 scripts/comp_sql
 scripts/make_binary_distribution
 scripts/msql2mysql
@@ -110,8 +126,11 @@ scripts/mytop
 scripts/wsrep_sst_common
 scripts/wsrep_sst_mysqldump
 scripts/wsrep_sst_rsync
+scripts/wsrep_sst_mariabackup
 scripts/wsrep_sst_xtrabackup
 scripts/wsrep_sst_xtrabackup-v2
+scripts/maria_add_gis_sp.sql
+scripts/maria_add_gis_sp_bootstrap.sql
 sql-bench/bench-count-distinct
 sql-bench/bench-init.pl
 sql-bench/compare-results
@@ -166,6 +185,9 @@ storage/myisam/myisamlog
 storage/myisam/myisampack
 storage/myisam/rt_test
 storage/myisam/sp_test
+storage/rocksdb/ldb
+storage/rocksdb/mysql_ldb
+storage/rocksdb/sst_dump
 storage/tokudb/PerconaFT/buildheader/db.h
 storage/tokudb/PerconaFT/buildheader/make_tdb
 storage/tokudb/PerconaFT/buildheader/runcat.sh
@@ -192,6 +214,7 @@ storage/tokudb/PerconaFT/tools/tokudb_load
 storage/tokudb/PerconaFT/tools/tokuftdump
 storage/tokudb/PerconaFT/tools/tokuft_logprint
 storage/tokudb/PerconaFT/xz/
+strings/conf_to_src
 support-files/MySQL-shared-compat.spec
 support-files/binary-configure
 support-files/config.huge.ini
@@ -211,6 +234,7 @@ support-files/mysql.spec
 support-files/mysqld_multi.server
 support-files/wsrep.cnf
 support-files/wsrep_notify
+support-files/policy/selinux/mysqld-safe.pp
 tags
 tests/async_queries
 tests/bug25714
@@ -227,6 +251,10 @@ storage/mroonga/vendor/groonga/src/groonga-benchmark
 storage/mroonga/vendor/groonga/src/suggest/groonga-suggest-create-dataset
 storage/mroonga/mysql-test/mroonga/storage/r/information_schema_plugins.result
 storage/mroonga/mysql-test/mroonga/storage/r/variable_version.result
+xxx/*
+yyy/*
+zzz/*
+
 # C and C++
 
 # Compiled Object files
@@ -238,6 +266,8 @@ storage/mroonga/mysql-test/mroonga/storage/r/variable_version.result
 *.exp
 *.dep
 *.idb
+*.res
+*.tlog
 
 # Precompiled Headers
 *.gch

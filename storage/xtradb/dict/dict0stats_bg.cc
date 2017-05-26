@@ -1,6 +1,7 @@
 /*****************************************************************************
 
-Copyright (c) 2012, 2013, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2012, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2017, MariaDB Corporation. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -40,8 +41,9 @@ Created Apr 25, 2012 Vasil Dimov
 
 #define SHUTTING_DOWN()		(srv_shutdown_state != SRV_SHUTDOWN_NONE)
 
-/** Event to wake up the stats thread */
-UNIV_INTERN os_event_t		dict_stats_event = NULL;
+/** Event to wake up dict_stats_thread on dict_stats_recalc_pool_add()
+or shutdown. Not protected by any mutex. */
+UNIV_INTERN os_event_t		dict_stats_event;
 
 /** This mutex protects the "recalc_pool" variable. */
 static ib_mutex_t		recalc_pool_mutex;
@@ -526,14 +528,10 @@ statistics.
 @return this function does not return, it calls os_thread_exit() */
 extern "C" UNIV_INTERN
 os_thread_ret_t
-DECLARE_THREAD(dict_stats_thread)(
-/*==============================*/
-	void*	arg __attribute__((unused)))	/*!< in: a dummy parameter
-						required by os_thread_create */
+DECLARE_THREAD(dict_stats_thread)(void*)
 {
+	my_thread_init();
 	ut_a(!srv_read_only_mode);
-
-	srv_dict_stats_thread_active = TRUE;
 
 	while (!SHUTTING_DOWN()) {
 
@@ -549,14 +547,6 @@ DECLARE_THREAD(dict_stats_thread)(
 			break;
 		}
 
-#if defined UNIV_DEBUG || defined UNIV_IBUF_DEBUG
-		if (srv_ibuf_disable_background_merge) {
-			usleep(100000);
-			os_event_reset(dict_stats_event);
-			continue;
-		}
-#endif
-
 		dict_stats_process_entry_from_recalc_pool();
 
 		while (defrag_pool.size())
@@ -565,8 +555,9 @@ DECLARE_THREAD(dict_stats_thread)(
 		os_event_reset(dict_stats_event);
 	}
 
-	srv_dict_stats_thread_active = FALSE;
+	srv_dict_stats_thread_active = false;
 
+	my_thread_end();
 	/* We count the number of threads in os_thread_exit(). A created
 	thread should always use that to exit instead of return(). */
 	os_thread_exit(NULL);

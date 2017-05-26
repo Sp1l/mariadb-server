@@ -73,14 +73,32 @@ IF(UNIX)
 )
 ENDIF()
 
+# Configure two scripts from one 'in' file.
+# The maria_add_gis_sp.sql - to be sent to 'mysql' tool
+# and the maria_add_gis_sp_bootstrap.sql, that can be sent to
+# the server as a bootstrap command.
+
+SET(ADD_GIS_SP_SET_DELIMITER "delimiter |")
+SET(ADD_GIS_SP_RESET_DELIMITER "delimiter ;")
+SET(ADD_GIS_SP_EOL "|")
+CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/maria_add_gis_sp.sql.in
+  ${CMAKE_CURRENT_BINARY_DIR}/maria_add_gis_sp.sql ESCAPE_QUOTES @ONLY)
+
+SET(ADD_GIS_SP_SET_DELIMITER "")
+SET(ADD_GIS_SP_RESET_DELIMITER "")
+SET(ADD_GIS_SP_EOL ";")
+CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/maria_add_gis_sp.sql.in
+  ${CMAKE_CURRENT_BINARY_DIR}/maria_add_gis_sp_bootstrap.sql ESCAPE_QUOTES @ONLY)
+
 INSTALL(FILES 
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables.sql 
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables_data.sql
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql_performance_tables.sql
   ${CMAKE_CURRENT_SOURCE_DIR}/fill_help_tables.sql
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql_test_data_timezone.sql
-  ${CMAKE_CURRENT_SOURCE_DIR}/maria_add_gis_sp.sql
-  ${CMAKE_CURRENT_SOURCE_DIR}/maria_add_gis_sp_bootstrap.sql
+  ${CMAKE_CURRENT_SOURCE_DIR}/mysql_to_mariadb.sql
+  ${CMAKE_CURRENT_BINARY_DIR}/maria_add_gis_sp.sql
+  ${CMAKE_CURRENT_BINARY_DIR}/maria_add_gis_sp_bootstrap.sql
   ${FIX_PRIVILEGES_SQL}
   DESTINATION ${INSTALL_MYSQLSHAREDIR} COMPONENT Server
 )
@@ -235,12 +253,21 @@ IF(WIN32)
   ENDFOREACH()
 ELSE()
   IF(WITH_WSREP)
-    SET(WSREP_BINARIES
-      wsrep_sst_common
+    SET(WSREP_SCRIPTS
       wsrep_sst_mysqldump
+      wsrep_sst_common
       wsrep_sst_rsync
       wsrep_sst_xtrabackup
       wsrep_sst_xtrabackup-v2
+      wsrep_sst_mariabackup
+    )
+  ENDIF()
+  IF (NOT WITHOUT_SERVER)
+    SET(SERVER_SCRIPTS
+      mysql_fix_extensions
+      mysqld_multi
+      mysqld_safe
+      mysqldumpslow
     )
   ENDIF()
   # Configure this one, for testing, but do not install it.
@@ -250,7 +277,6 @@ ELSE()
   SET(BIN_SCRIPTS
     msql2mysql
     mysql_config
-    mysql_fix_extensions
     mysql_setpermission
     mysql_secure_installation
     mysqlaccess
@@ -258,10 +284,8 @@ ELSE()
     mysql_find_rows
     mytop
     mysqlhotcopy
-    mysqldumpslow
-    mysqld_multi
-    mysqld_safe
-    ${WSREP_BINARIES}
+    ${SERVER_SCRIPTS}
+    ${WSREP_SCRIPTS}
     ${SYSTEMD_SCRIPTS}
   )
   FOREACH(file ${BIN_SCRIPTS})

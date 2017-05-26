@@ -1,40 +1,45 @@
-SET(TOKUDB_VERSION 5.6.26-74.0)
+SET(TOKUDB_VERSION 5.6.36-82.0)
 # PerconaFT only supports x86-64 and cmake-2.8.9+
-IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND
-    NOT CMAKE_VERSION VERSION_LESS "2.8.9")
+IF(CMAKE_VERSION VERSION_LESS "2.8.9")
+  MESSAGE(STATUS "CMake 2.8.9 or higher is required by TokuDB")
+ELSEIF(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR
+       CMAKE_SYSTEM_PROCESSOR STREQUAL "amd64")
 CHECK_CXX_SOURCE_COMPILES(
 "
 struct a {int b; int c; };
 struct a d = { .b=1, .c=2 };
 int main() { return 0; }
 " TOKUDB_OK)
-ELSE()
-  IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"  AND
-     CMAKE_VERSION VERSION_LESS "2.8.9")
-    MESSAGE(STATUS "CMake 2.8.9 or higher is required by TokuDB")
-  ENDIF()
 ENDIF()
 
 IF(NOT TOKUDB_OK)
   RETURN()
 ENDIF()
 
-SET(TOKUDB_SOURCES ha_tokudb.cc)
-MYSQL_ADD_PLUGIN(tokudb ${TOKUDB_SOURCES} STORAGE_ENGINE MODULE_ONLY)
+SET(TOKUDB_SOURCES
+    ha_tokudb.cc
+    tokudb_background.cc
+    tokudb_information_schema.cc
+    tokudb_sysvars.cc
+    tokudb_thread.cc
+    tokudb_dir_cmd.cc)
+MYSQL_ADD_PLUGIN(tokudb ${TOKUDB_SOURCES} STORAGE_ENGINE MODULE_ONLY
+                 COMPONENT tokudb-engine)
 
 IF(NOT TARGET tokudb)
   RETURN()
 ENDIF()
 
+INCLUDE(jemalloc)
+CHECK_JEMALLOC()
+
 IF(NOT LIBJEMALLOC)
   MESSAGE(WARNING "TokuDB is enabled, but jemalloc is not. This configuration is not supported")
 ENDIF()
 
-MY_CHECK_AND_SET_COMPILER_FLAG("-Wno-vla")
 MY_CHECK_AND_SET_COMPILER_FLAG("-Wno-vla" DEBUG)
 
 ############################################
-SET(TOKUDB_DEB_FILES "usr/lib/mysql/plugin/ha_tokudb.so\netc/mysql/conf.d/tokudb.cnf\nusr/bin/tokuftdump\nusr/share/doc/mariadb-server-10.2/README-TOKUDB\nusr/share/doc/mariadb-server-10.2/README.md" PARENT_SCOPE)
 MARK_AS_ADVANCED(BUILDNAME)
 MARK_AS_ADVANCED(BUILD_TESTING)
 MARK_AS_ADVANCED(CMAKE_TOKUDB_REVISION)
@@ -50,9 +55,15 @@ MARK_AS_ADVANCED(gcc_ar)
 MARK_AS_ADVANCED(gcc_ranlib)
 ############################################
 
+# pick language dialect
+MY_CHECK_AND_SET_COMPILER_FLAG(-std=c++11)
+
 SET(BUILD_TESTING OFF CACHE BOOL "")
 SET(USE_VALGRIND OFF CACHE BOOL "")
 SET(TOKU_DEBUG_PARANOID OFF CACHE BOOL "")
+
+# Enable TokuDB's TOKUDB_DEBUG in debug builds
+SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DTOKUDB_DEBUG")
 
 IF(NOT DEFINED TOKUDB_VERSION)
     IF(DEFINED ENV{TOKUDB_VERSION})
@@ -71,14 +82,6 @@ ENDIF()
 IF(DEFINED TOKUDB_NOPATCH_CONFIG)
     ADD_DEFINITIONS("-DTOKUDB_NOPATCH_CONFIG=${TOKUDB_NOPATCH_CONFIG}")
 ENDIF()
-
-IF(DEFINED TOKUDB_CHECK_JEMALLOC)
-    ADD_DEFINITIONS("-DTOKUDB_CHECK_JEMALLOC=${TOKUDB_CHECK_JEMALLOC}")
-ENDIF()
-
-## adds a compiler flag if the compiler supports it
-include(CheckCCompilerFlag)
-include(CheckCXXCompilerFlag)
 
 MY_CHECK_AND_SET_COMPILER_FLAG(-Wno-missing-field-initializers)
 
@@ -104,14 +107,12 @@ INCLUDE_DIRECTORIES(${CMAKE_CURRENT_BINARY_DIR}/${TOKU_FT_DIR_NAME}/buildheader)
 INCLUDE_DIRECTORIES(${CMAKE_CURRENT_BINARY_DIR}/${TOKU_FT_DIR_NAME}/portability)
 
 TARGET_LINK_LIBRARIES(tokudb tokufractaltree_static tokuportability_static
-                      ${ZLIB_LIBRARY} stdc++)
+                      ${ZLIB_LIBRARY} ${LIBJEMALLOC} stdc++)
 
 SET(CMAKE_MODULE_LINKER_FLAGS_RELEASE "${CMAKE_MODULE_LINKER_FLAGS_RELEASE} -flto -fuse-linker-plugin")
 SET(CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO} -flto -fuse-linker-plugin")
 
-SET(CPACK_RPM_server_PACKAGE_OBSOLETES
-  "${CPACK_RPM_server_PACKAGE_OBSOLETES} MariaDB-tokudb-engine < 10.0.5" PARENT_SCOPE)
-
 IF (INSTALL_SYSCONF2DIR)
-  INSTALL(FILES tokudb.cnf DESTINATION ${INSTALL_SYSCONF2DIR} COMPONENT Server)
+  INSTALL(FILES tokudb.cnf DESTINATION ${INSTALL_SYSCONF2DIR}
+          COMPONENT tokudb-engine)
 ENDIF(INSTALL_SYSCONF2DIR)

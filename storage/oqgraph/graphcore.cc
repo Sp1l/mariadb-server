@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 /* ======================================================================
    Open Query Graph Computation Engine, based on a concept by Arjen Lentz
@@ -485,7 +485,7 @@ namespace open_query
   optional<Vertex>
   oqgraph_share::find_vertex(VertexID id) const
   {
-    return ::boost::find_vertex(id, g);
+    return oqgraph3::find_vertex(id, g);
   }
 
 #if 0
@@ -1036,11 +1036,11 @@ int stack_cursor::fetch_row(const row &row_info, row &result,
     optional<EdgeWeight> w;
     optional<Vertex> v;
     result= row_info;
-    if ((result.seq_indicator= seq= last.sequence()))
+    if ((result.seq_indicator= static_cast<bool>(seq= last.sequence())))
       result.seq= *seq;
-    if ((result.link_indicator= v= last.vertex()))
+    if ((result.link_indicator= static_cast<bool>(v= last.vertex())))
       result.link= get(boost::vertex_index, share->g, *v);
-    if ((result.weight_indicator= w= last.weight()))
+    if ((result.weight_indicator= static_cast<bool>(w= last.weight())))
       result.weight= *w;
     return oqgraph::OK;
   }

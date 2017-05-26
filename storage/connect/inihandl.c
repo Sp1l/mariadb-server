@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA
  */
 #include "my_global.h"
 
@@ -193,7 +193,7 @@ static void PROFILE_Save( FILE *file, PROFILESECTION *section )
     }
 
     for (key = section->key; key; key = key->next)
-      if (key->name && key->name[0]) {
+      if (key->name[0]) {
         fprintf(file, "%s", SVP(key->name));
 
         if (key->value)
@@ -622,13 +622,16 @@ void PROFILE_End(void)
   if (trace)
     htrc("PROFILE_End: CurProfile=%p N=%d\n", CurProfile, N_CACHED_PROFILES);
 
+	if (!CurProfile)						   //	Sergey Vojtovich
+		return;
+
   /* Close all opened files and free the cache structure */
   for (i = 0; i < N_CACHED_PROFILES; i++) {
     if (trace)
       htrc("MRU=%s i=%d\n", SVP(MRUProfile[i]->filename), i);
 
-    CurProfile = MRUProfile[i];
-    PROFILE_ReleaseFile();
+//  CurProfile = MRUProfile[i];			Sergey Vojtovich
+//  PROFILE_ReleaseFile();					see MDEV-9997
     free(MRUProfile[i]);
     } // endfor i
 

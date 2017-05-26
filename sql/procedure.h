@@ -53,10 +53,12 @@ public:
     init_make_field(tmp_field,field_type());
   }
   unsigned int size_of() { return sizeof(*this);}
-  bool check_vcol_func_processor(uchar *int_arg) 
+  bool check_vcol_func_processor(void *arg)
   {
-    return trace_unsupported_by_check_vcol_func_processor("proc"); 
+    DBUG_ASSERT(0); // impossible
+    return mark_unsupported_function("proc", arg, VCOL_IMPOSSIBLE);
   }
+  Item* get_copy(THD *thd, MEM_ROOT *mem_root) { return 0; }
 };
 
 class Item_proc_real :public Item_proc

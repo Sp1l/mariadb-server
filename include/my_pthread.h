@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2014, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2014, MariaDB
+   Copyright (c) 2009, 2017, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -54,26 +54,7 @@ typedef struct st_pthread_link {
   We use native conditions on Vista and later, and fallback to own 
   implementation on earlier OS version.
 */
-typedef union
-{
-  /* Native condition (used on Vista and later) */
-  CONDITION_VARIABLE native_cond;
-
-  /* Own implementation (used on XP) */
-  struct
-  { 
-    uint32 waiting;
-    CRITICAL_SECTION lock_waiting;
-    enum 
-    {
-      SIGNAL= 0,
-      BROADCAST= 1,
-      MAX_EVENTS= 2
-    } EVENTS;
-    HANDLE events[MAX_EVENTS];
-    HANDLE broadcast_block_event;
-  };
-} pthread_cond_t;
+typedef  CONDITION_VARIABLE pthread_cond_t;
 
 
 typedef int pthread_mutexattr_t;
@@ -81,10 +62,8 @@ typedef int pthread_mutexattr_t;
 #define pthread_handler_t EXTERNC void * __cdecl
 typedef void * (__cdecl *pthread_handler)(void *);
 
-typedef volatile LONG my_pthread_once_t;
-#define MY_PTHREAD_ONCE_INIT  0
-#define MY_PTHREAD_ONCE_INPROGRESS 1
-#define MY_PTHREAD_ONCE_DONE 2
+typedef INIT_ONCE my_pthread_once_t;
+#define MY_PTHREAD_ONCE_INIT INIT_ONCE_STATIC_INIT;
 
 #if !STRUCT_TIMESPEC_HAS_TV_SEC  || !STRUCT_TIMESPEC_HAS_TV_NSEC
 struct timespec {
@@ -287,7 +266,7 @@ struct tm *gmtime_r(const time_t *clock, struct tm *res);
 #undef	pthread_detach_this_thread
 #define pthread_detach_this_thread() { pthread_t tmp=pthread_self() ; pthread_detach(&tmp); }
 #else /* HAVE_PTHREAD_ATTR_CREATE && !HAVE_SIGWAIT */
-#define HAVE_PTHREAD_KILL
+#define HAVE_PTHREAD_KILL 1
 #endif
 
 #endif /* defined(__WIN__) */
@@ -366,6 +345,26 @@ int my_pthread_mutex_trylock(pthread_mutex_t *mutex);
   (ABSTIME).MY_tv_nsec= (_now_ % 1000000000ULL);       \
 } while(0)
 #endif /* !set_timespec_time_nsec */
+
+#ifdef MYSQL_CLIENT
+#define _current_thd() NULL
+#elif defined(_WIN32)
+#ifdef __cplusplus
+extern "C"
+#endif
+MYSQL_THD _current_thd_noinline();
+#define _current_thd() _current_thd_noinline()
+#else
+/*
+  THR_THD is a key which will be used to set/get THD* for a thread,
+  using my_pthread_setspecific_ptr()/my_thread_getspecific_ptr().
+*/
+extern pthread_key(MYSQL_THD, THR_THD);
+static inline MYSQL_THD _current_thd(void)
+{
+  return my_pthread_getspecific_ptr(MYSQL_THD,THR_THD);
+}
+#endif
 
 /* safe_mutex adds checking to mutex for easier debugging */
 struct st_hash;
@@ -672,7 +671,7 @@ extern pthread_mutexattr_t my_errorcheck_mutexattr;
 #define ESRCH 1
 #endif
 
-typedef ulong my_thread_id;
+typedef uint64 my_thread_id;
 
 extern void my_threadattr_global_init(void);
 extern my_bool my_thread_global_init(void);
@@ -694,7 +693,7 @@ extern void my_mutex_end(void);
   We need to have at least 256K stack to handle calls to myisamchk_init()
   with the current number of keys and key parts.
 */
-#define DEFAULT_THREAD_STACK	(288*1024L)
+#define DEFAULT_THREAD_STACK	(292*1024L)
 #endif
 
 #define MY_PTHREAD_LOCK_READ 0
@@ -712,7 +711,7 @@ struct st_my_thread_var
   mysql_mutex_t * volatile current_mutex;
   mysql_cond_t * volatile current_cond;
   pthread_t pthread_self;
-  my_thread_id id;
+  my_thread_id id, dbug_id;
   int volatile abort;
   my_bool init;
   struct st_my_thread_var *next,**prev;

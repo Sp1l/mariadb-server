@@ -182,7 +182,7 @@ public:
 
   const char *m_tmp_query;	///< Temporary pointer to sub query string
   st_sp_chistics *m_chistics;
-  ulonglong m_sql_mode;		///< For SHOW CREATE and execution
+  sql_mode_t m_sql_mode;		///< For SHOW CREATE and execution
   LEX_STRING m_qname;		///< db.name
   bool m_explicit_name;         ///< Prepend the db name? */
   LEX_STRING m_db;
@@ -337,6 +337,9 @@ public:
   bool
   execute_procedure(THD *thd, List<Item> *args);
 
+  static void
+  show_create_routine_get_fields(THD *thd, int type, List<Item> *fields);
+
   bool
   show_create_routine(THD *thd, int type);
 
@@ -418,7 +421,7 @@ public:
                              Column_definition *field_def);
 
   void set_info(longlong created, longlong modified,
-		st_sp_chistics *chistics, ulonglong sql_mode);
+		st_sp_chistics *chistics, sql_mode_t sql_mode);
 
   void set_definer(const char *definer, uint definerlen);
   void set_definer(const LEX_STRING *user_name, const LEX_STRING *host_name);
@@ -604,7 +607,7 @@ public:
                        instruction for CONTINUE error handlers.
    
     @retval 0      on success, 
-    @retval other  if some error occured
+    @retval other  if some error occurred
   */
 
   virtual int execute(THD *thd, uint *nextp) = 0;

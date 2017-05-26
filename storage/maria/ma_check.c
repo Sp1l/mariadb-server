@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 /* Describe, check and repair of MARIA tables */
 
@@ -1364,6 +1364,7 @@ static int check_dynamic_record(HA_CHECK *param, MARIA_HA *info, int extend,
         pos=block_info.filepos+block_info.block_len;
         if (block_info.rec_len > (uint) share->base.max_pack_length)
         {
+          my_errno= HA_ERR_WRONG_IN_RECORD;
           _ma_check_print_error(param,"Found too long record (%lu) at %s",
                                 (ulong) block_info.rec_len,
                                 llstr(start_recpos,llbuff));
@@ -2837,7 +2838,7 @@ int maria_repair(HA_CHECK *param, register MARIA_HA *info,
                                 (param->testflag & T_BACKUP_DATA ?
                                  MYF(MY_REDEL_MAKE_BACKUP): MYF(0)) |
                                 sync_dir) ||
-        _ma_open_datafile(info, share, NullS, -1))
+        _ma_open_datafile(info, share))
     {
       goto err;
     }
@@ -3998,7 +3999,7 @@ int maria_repair_by_sort(HA_CHECK *param, register MARIA_HA *info,
                                   (param->testflag & T_BACKUP_DATA ?
                                    MYF(MY_REDEL_MAKE_BACKUP): MYF(0)) |
                                   sync_dir) ||
-          _ma_open_datafile(info, share, NullS, -1))
+          _ma_open_datafile(info, share))
       {
         _ma_check_print_error(param, "Couldn't change to new data file");
         goto err;
@@ -4220,6 +4221,7 @@ int maria_repair_parallel(HA_CHECK *param, register MARIA_HA *info,
     printf("Data records: %s\n", llstr(start_records, llbuff));
   }
 
+  bzero(&new_data_cache, sizeof(new_data_cache));
   if (initialize_variables_for_repair(param, &sort_info, &tmp_sort_param, info,
                                       rep_quick, &backup_share))
     goto err;
@@ -4638,7 +4640,7 @@ err:
                                   MYF((param->testflag & T_BACKUP_DATA ?
                                        MY_REDEL_MAKE_BACKUP : 0) |
                                       sync_dir)) ||
-	  _ma_open_datafile(info,share, NullS, -1))
+	  _ma_open_datafile(info,share))
 	got_error=1;
     }
   }
@@ -4995,6 +4997,7 @@ static int sort_get_next_record(MARIA_SORT_PARAM *sort_param)
 	  param->error_printed=1;
           param->retry_repair=1;
           param->testflag|=T_RETRY_WITHOUT_QUICK;
+          my_errno= HA_ERR_WRONG_IN_RECORD;
 	  DBUG_RETURN(1);	/* Something wrong with data */
 	}
 	b_type= _ma_get_block_info(info, &block_info,-1,pos);
@@ -5268,6 +5271,7 @@ static int sort_get_next_record(MARIA_SORT_PARAM *sort_param)
 	param->error_printed=1;
         param->retry_repair=1;
         param->testflag|=T_RETRY_WITHOUT_QUICK;
+        my_errno= HA_ERR_WRONG_IN_RECORD;
 	DBUG_RETURN(1);		/* Something wrong with data */
       }
       sort_param->start_recpos=sort_param->pos;
@@ -5642,7 +5646,7 @@ static int sort_maria_ft_key_write(MARIA_SORT_PARAM *sort_param,
 
   if (ha_compare_text(sort_param->seg->charset,
                       a+1,a_len-1,
-                      ft_buf->lastkey+1,val_off-1, 0, 0)==0)
+                      ft_buf->lastkey+1,val_off-1, 0)==0)
   {
     uchar *p;
     if (!ft_buf->buf)                   /* store in second-level tree */
@@ -6103,7 +6107,7 @@ int maria_recreate_table(HA_CHECK *param, MARIA_HA **org_info, char *filename)
   create_info.data_file_length=file_length;
   create_info.auto_increment=share.state.auto_increment;
   create_info.language = (param->language ? param->language :
-			  share.state.header.language);
+			  share.base.language);
   create_info.key_file_length=  status_info.key_file_length;
   create_info.org_data_file_type= ((enum data_file_type)
                                    share.state.header.org_data_file_type);
@@ -6635,17 +6639,6 @@ static void copy_data_file_state(MARIA_STATE_INFO *to,
 }
 
 
-/* Return 1 if block is full of zero's */
-
-static my_bool zero_filled_block(uchar *tmp, uint length)
-{
-  while (length--)
-    if (*(tmp++) != 0)
-      return 0;
-  return 1;
-}
-
-
 /*
   Read 'safely' next record while scanning table.
 
@@ -6753,8 +6746,7 @@ read_next_page:
             sometimes be found at end of a bitmap when we wrote a big
             record last that was moved to the next bitmap.
           */
-          if (!zero_filled_block(info->scan.page_buff, share->block_size) ||
-              _ma_check_bitmap_data(info, UNALLOCATED_PAGE, 0, 
+          if (_ma_check_bitmap_data(info, UNALLOCATED_PAGE, 0, 
                                     _ma_bitmap_get_page_bits(info,
                                                              &share->bitmap,
                                                              page)))

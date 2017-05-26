@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2007, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2007, 2016, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -287,7 +287,7 @@ fts_expand_query(
 	dict_index_t*	index,		/*!< in: FTS index to search */
 	fts_query_t*	query)		/*!< in: query result, to be freed
 					by the client */
-	__attribute__((nonnull, warn_unused_result));
+	MY_ATTRIBUTE((nonnull, warn_unused_result));
 /*************************************************************//**
 This function finds documents that contain all words in a
 phrase or proximity search. And if proximity search, verify
@@ -953,6 +953,18 @@ fts_query_free_doc_ids(
 	query->total_size -= SIZEOF_RBT_CREATE;
 }
 
+/**
+Free the query intersection
+@param[in] query	query instance */
+static
+void
+fts_query_free_intersection(
+	fts_query_t*	query)
+{
+	fts_query_free_doc_ids(query, query->intersection);
+	query->intersection = NULL;
+}
+
 /*******************************************************************//**
 Add the word to the documents "list" of matching words from
 the query. We make a copy of the word from the query heap. */
@@ -1128,7 +1140,7 @@ cont_search:
 /*****************************************************************//**
 Set difference.
 @return DB_SUCCESS if all go well */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_difference(
 /*=================*/
@@ -1220,7 +1232,7 @@ fts_query_difference(
 /*****************************************************************//**
 Intersect the token doc ids with the current set.
 @return DB_SUCCESS if all go well */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_intersect(
 /*================*/
@@ -1311,6 +1323,7 @@ fts_query_intersect(
 		/* error is passed by 'query->error' */
 		if (query->error != DB_SUCCESS) {
 			ut_ad(query->error == DB_FTS_EXCEED_RESULT_CACHE_LIMIT);
+			fts_query_free_intersection(query);
 			return(query->error);
 		}
 
@@ -1339,6 +1352,8 @@ fts_query_intersect(
 
 			ut_a(!query->multi_exist || (query->multi_exist
 			     && rbt_size(query->doc_ids) <= n_doc_ids));
+		} else if (query->intersection != NULL) {
+			fts_query_free_intersection(query);
 		}
 	}
 
@@ -1398,7 +1413,7 @@ fts_query_cache(
 /*****************************************************************//**
 Set union.
 @return DB_SUCCESS if all go well */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_union(
 /*============*/
@@ -1557,6 +1572,11 @@ fts_merge_doc_ids(
 				query, ranking->doc_id, ranking->rank);
 
 		if (query->error != DB_SUCCESS) {
+			if (query->intersection != NULL)
+			{
+				ut_a(query->oper == FTS_EXIST);
+				fts_query_free_intersection(query);
+			}
 			DBUG_RETURN(query->error);
 		}
 
@@ -2015,7 +2035,7 @@ fts_query_select(
 Read the rows from the FTS index, that match word and where the
 doc id is between first and last doc id.
 @return DB_SUCCESS if all go well else error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_find_term(
 /*================*/
@@ -2155,7 +2175,7 @@ fts_query_sum(
 /********************************************************************
 Calculate the total documents that contain a particular word (term).
 @return DB_SUCCESS if all go well else error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_total_docs_containing_term(
 /*=================================*/
@@ -2234,7 +2254,7 @@ fts_query_total_docs_containing_term(
 /********************************************************************
 Get the total number of words in a documents.
 @return DB_SUCCESS if all go well else error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_terms_in_document(
 /*========================*/
@@ -2315,7 +2335,7 @@ fts_query_terms_in_document(
 /*****************************************************************//**
 Retrieve the document and match the phrase tokens.
 @return DB_SUCCESS or error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_match_document(
 /*=====================*/
@@ -2361,7 +2381,7 @@ fts_query_match_document(
 This function fetches the original documents and count the
 words in between matching words to see that is in specified distance
 @return DB_SUCCESS if all OK */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 bool
 fts_query_is_in_proximity_range(
 /*============================*/
@@ -2416,7 +2436,7 @@ fts_query_is_in_proximity_range(
 Iterate over the matched document ids and search the for the
 actual phrase in the text.
 @return DB_SUCCESS if all OK */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_search_phrase(
 /*====================*/
@@ -2504,7 +2524,7 @@ func_exit:
 /*****************************************************************//**
 Text/Phrase search.
 @return DB_SUCCESS or error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_phrase_search(
 /*====================*/
@@ -2755,7 +2775,7 @@ func_exit:
 /*****************************************************************//**
 Find the word and evaluate.
 @return DB_SUCCESS if all go well */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_query_execute(
 /*==============*/
@@ -4124,7 +4144,7 @@ words in documents found in the first search pass will be used as
 search arguments to search the document again, thus "expand"
 the search result set.
 @return DB_SUCCESS if success, otherwise the error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 fts_expand_query(
 /*=============*/

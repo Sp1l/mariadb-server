@@ -56,7 +56,7 @@
   meta file is first opened it is marked as dirty. It is opened when the table 
   itself is opened for writing. When the table is closed the new count for rows 
   is written to the meta file and the file is marked as clean. If the meta file 
-  is opened and it is marked as dirty, it is assumed that a crash occured. At 
+  is opened and it is marked as dirty, it is assumed that a crash occurred. At 
   this point an error occurs and the user is told to rebuild the file.
   A rebuild scans the rows and rewrites the meta file. If corruption is found
   in the data file then the meta file is not repaired.
@@ -376,6 +376,27 @@ unsigned int ha_archive::pack_row_v1(uchar *record)
   uchar *pos;
   DBUG_ENTER("pack_row_v1");
   memcpy(record_buffer->buffer, record, table->s->reclength);
+
+  /*
+    The end of VARCHAR fields are filled with garbage,so here
+    we explicitly set the end of the VARCHAR fields with zeroes
+  */
+
+  for (Field** field= table->field; (*field) ; field++)
+  {
+    Field *fld= *field;
+    if (fld->type() == MYSQL_TYPE_VARCHAR)
+    {
+      if (!(fld->is_real_null(record - table->record[0])))
+      {
+        ptrdiff_t  start= (fld->ptr - table->record[0]);
+        Field_varstring *const field_var= (Field_varstring *)fld;
+        uint offset= field_var->data_length() + field_var->length_size();
+        memset(record_buffer->buffer + start + offset, 0,
+               fld->field_length - offset + 1);
+      }
+    }
+  }
   pos= record_buffer->buffer + table->s->reclength;
   for (blob= table->s->blob_field, end= blob + table->s->blob_fields;
        blob != end; blob++)
@@ -383,8 +404,7 @@ unsigned int ha_archive::pack_row_v1(uchar *record)
     uint32 length= ((Field_blob *) table->field[*blob])->get_length();
     if (length)
     {
-      uchar *data_ptr;
-      ((Field_blob *) table->field[*blob])->get_ptr(&data_ptr);
+      uchar *data_ptr= ((Field_blob *) table->field[*blob])->get_ptr();
       memcpy(pos, data_ptr, length);
       pos+= length;
     }

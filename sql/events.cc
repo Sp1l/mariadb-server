@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2013, Oracle and/or its affiliates.
+   Copyright (c) 2017, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -102,7 +103,7 @@ ulong Events::inited;
 int sortcmp_lex_string(LEX_STRING s, LEX_STRING t, CHARSET_INFO *cs)
 {
  return cs->coll->strnncollsp(cs, (uchar *) s.str,s.length,
-                                  (uchar *) t.str,t.length, 0);
+                                  (uchar *) t.str,t.length);
 }
 
 
@@ -242,6 +243,7 @@ common_1_lev_code:
     break;
   case INTERVAL_WEEK:
     expr/= 7;
+    /* fall through */
   default:
     close_quote= FALSE;
     break;
@@ -333,6 +335,10 @@ Events::create_event(THD *thd, Event_parse_data *parse_data)
   if (check_access(thd, EVENT_ACL, parse_data->dbname.str, NULL, NULL, 0, 0))
     DBUG_RETURN(TRUE);
 
+  if (lock_object_name(thd, MDL_key::EVENT,
+                       parse_data->dbname.str, parse_data->name.str))
+    DBUG_RETURN(TRUE);
+
   if (check_db_dir_existence(parse_data->dbname.str))
   {
     my_error(ER_BAD_DB_ERROR, MYF(0), parse_data->dbname.str);
@@ -346,10 +352,6 @@ Events::create_event(THD *thd, Event_parse_data *parse_data)
     so that all supporting tables are updated for CREATE EVENT command.
   */
   save_binlog_format= thd->set_current_stmt_binlog_format_stmt();
-
-  if (lock_object_name(thd, MDL_key::EVENT,
-                       parse_data->dbname.str, parse_data->name.str))
-    DBUG_RETURN(TRUE);
 
   if (thd->lex->create_info.or_replace() && event_queue)
     event_queue->drop_event(thd, parse_data->dbname, parse_data->name);
@@ -454,6 +456,16 @@ Events::update_event(THD *thd, Event_parse_data *parse_data,
 
   if (check_access(thd, EVENT_ACL, parse_data->dbname.str, NULL, NULL, 0, 0))
     DBUG_RETURN(TRUE);
+  if (lock_object_name(thd, MDL_key::EVENT,
+                       parse_data->dbname.str, parse_data->name.str))
+    DBUG_RETURN(TRUE);
+
+  if (check_db_dir_existence(parse_data->dbname.str))
+  {
+    my_error(ER_BAD_DB_ERROR, MYF(0), parse_data->dbname.str);
+    DBUG_RETURN(TRUE);
+  }
+
 
   if (new_dbname)                               /* It's a rename */
   {
@@ -476,6 +488,13 @@ Events::update_event(THD *thd, Event_parse_data *parse_data,
     if (check_access(thd, EVENT_ACL, new_dbname->str, NULL, NULL, 0, 0))
       DBUG_RETURN(TRUE);
 
+    /*
+     Acquire mdl exclusive lock on target database name.
+    */
+    if (lock_object_name(thd, MDL_key::EVENT,
+                         new_dbname->str, new_name->str))
+      DBUG_RETURN(TRUE);
+
     /* Check that the target database exists */
     if (check_db_dir_existence(new_dbname->str))
     {
@@ -489,10 +508,6 @@ Events::update_event(THD *thd, Event_parse_data *parse_data,
     so that all supporting tables are updated for UPDATE EVENT command.
   */
   save_binlog_format= thd->set_current_stmt_binlog_format_stmt();
-
-  if (lock_object_name(thd, MDL_key::EVENT,
-                       parse_data->dbname.str, parse_data->name.str))
-    DBUG_RETURN(TRUE);
 
   /* On error conditions my_error() is called so no need to handle here */
   if (!(ret= db_repository->update_event(thd, parse_data,
@@ -841,7 +856,7 @@ Events::init(THD *thd, bool opt_noacl_or_bootstrap)
   if (!thd)
   {
 
-    if (!(thd= new THD()))
+    if (!(thd= new THD(0)))
     {
       res= TRUE;
       goto end;
@@ -1134,7 +1149,7 @@ Events::load_events_from_db(THD *thd)
     DBUG_RETURN(TRUE);
   }
 
-  if (init_read_record(&read_record_info, thd, table, NULL, 0, 1, FALSE))
+  if (init_read_record(&read_record_info, thd, table, NULL, NULL, 0, 1, FALSE))
   {
     close_thread_tables(thd);
     DBUG_RETURN(TRUE);

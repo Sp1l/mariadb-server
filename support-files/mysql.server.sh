@@ -47,8 +47,8 @@ basedir=
 datadir=
 
 # Default value, in seconds, afterwhich the script should timeout waiting
-# for server start. 
-# Value here is overriden by value in my.cnf. 
+# for server start.
+# Value here is overridden by value in my.cnf.
 # 0 means don't wait at all
 # Negative numbers mean to wait indefinitely
 service_startup_timeout=900
@@ -156,15 +156,8 @@ parse_server_arguments() {
 
 # Get arguments from the my.cnf file,
 # the only group, which is read from now on is [mysqld]
-if test -x ./bin/my_print_defaults
-then
-  print_defaults="./bin/my_print_defaults"
-elif test -x $bindir/my_print_defaults
-then
+if test -x "$bindir/my_print_defaults";  then
   print_defaults="$bindir/my_print_defaults"
-elif test -x $bindir/mysql_print_defaults
-then
-  print_defaults="$bindir/mysql_print_defaults"
 else
   # Try to find basedir in /etc/my.cnf
   conf=/etc/my.cnf
@@ -179,11 +172,6 @@ else
       if test -x "$d/bin/my_print_defaults"
       then
         print_defaults="$d/bin/my_print_defaults"
-        break
-      fi
-      if test -x "$d/bin/mysql_print_defaults"
-      then
-        print_defaults="$d/bin/mysql_print_defaults"
         break
       fi
     done
@@ -308,7 +296,7 @@ case "$mode" in
     then
       # Give extra arguments to mysqld with the my.cnf file. This script
       # may be overwritten at next upgrade.
-      $bindir/mysqld_safe --datadir="$datadir" --pid-file="$mysqld_pid_file_path" "$@" >/dev/null 2>&1 &
+      $bindir/mysqld_safe --datadir="$datadir" --pid-file="$mysqld_pid_file_path" "$@" &
       wait_for_ready; return_value=$?
 
       # Make lock for RedHat / SuSE
@@ -379,9 +367,9 @@ case "$mode" in
     ;;
   'status')
     # First, check to see if pid file exists
-    if test -s "$mysqld_pid_file_path" ; then 
+    if test -s "$mysqld_pid_file_path" ; then
       read mysqld_pid < "$mysqld_pid_file_path"
-      if kill -0 $mysqld_pid 2>/dev/null ; then 
+      if kill -0 $mysqld_pid 2>/dev/null ; then
         log_success_msg "MySQL running ($mysqld_pid)"
         exit 0
       else
@@ -390,18 +378,18 @@ case "$mode" in
       fi
     else
       # Try to find appropriate mysqld process
-      mysqld_pid=`pidof $libexecdir/mysqld`
+      mysqld_pid=`pgrep $libexecdir/mysqld`
 
       # test if multiple pids exist
       pid_count=`echo $mysqld_pid | wc -w`
       if test $pid_count -gt 1 ; then
         log_failure_msg "Multiple MySQL running but PID file could not be found ($mysqld_pid)"
         exit 5
-      elif test -z $mysqld_pid ; then 
-        if test -f "$lock_file_path" ; then 
+      elif test -z $mysqld_pid ; then
+        if test -f "$lock_file_path" ; then
           log_failure_msg "MySQL is not running, but lock file ($lock_file_path) exists"
           exit 2
-        fi 
+        fi
         log_failure_msg "MySQL is not running"
         exit 3
       else

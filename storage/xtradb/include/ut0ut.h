@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1994, 2016, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -80,18 +80,33 @@ private:
 
 # elif defined(HAVE_FAKE_PAUSE_INSTRUCTION)
 #  define UT_RELAX_CPU() __asm__ __volatile__ ("rep; nop")
-# elif defined(HAVE_ATOMIC_BUILTINS)
-#  define UT_RELAX_CPU() do { \
-     volatile lint	volatile_var; \
-     os_compare_and_swap_lint(&volatile_var, 0, 1); \
-   } while (0)
 # elif defined(HAVE_WINDOWS_ATOMICS)
    /* In the Win32 API, the x86 PAUSE instruction is executed by calling
    the YieldProcessor macro defined in WinNT.h. It is a CPU architecture-
    independent way by using YieldProcessor. */
 #  define UT_RELAX_CPU() YieldProcessor()
+# elif defined(__powerpc__) && defined __GLIBC__
+#include <sys/platform/ppc.h>
+#  define UT_RELAX_CPU() __ppc_get_timebase()
 # else
 #  define UT_RELAX_CPU() ((void)0) /* avoid warning for an empty statement */
+# endif
+
+#if defined (__GNUC__)
+#  define UT_COMPILER_BARRIER() __asm__ __volatile__ ("":::"memory")
+#elif defined (_MSC_VER)
+#  define UT_COMPILER_BARRIER() _ReadWriteBarrier()
+#else
+#  define UT_COMPILER_BARRIER()
+#endif
+
+# if defined(HAVE_HMT_PRIORITY_INSTRUCTION)
+#include <sys/platform/ppc.h>
+#  define UT_LOW_PRIORITY_CPU() __ppc_set_ppr_low()
+#  define UT_RESUME_PRIORITY_CPU() __ppc_set_ppr_med()
+# else
+#  define UT_LOW_PRIORITY_CPU() ((void)0)
+#  define UT_RESUME_PRIORITY_CPU() ((void)0)
 # endif
 
 /*********************************************************************//**
@@ -219,7 +234,7 @@ ulint
 ut_2_power_up(
 /*==========*/
 	ulint	n)	/*!< in: number != 0 */
-	__attribute__((const));
+	MY_ATTRIBUTE((const));
 
 /** Determine how many bytes (groups of 8 bits) are needed to
 store the given number of bits.
@@ -299,7 +314,7 @@ void
 ut_print_timestamp(
 /*===============*/
 	FILE*	file)	/*!< in: file where to print */
-	UNIV_COLD __attribute__((nonnull));
+	UNIV_COLD MY_ATTRIBUTE((nonnull));
 
 #ifndef UNIV_INNOCHECKSUM
 
@@ -334,7 +349,7 @@ Runs an idle loop on CPU. The argument gives the desired delay
 in microseconds on 100 MHz Pentium + Visual C++.
 @return	dummy value */
 UNIV_INTERN
-ulint
+void
 ut_delay(
 /*=====*/
 	ulint	delay);	/*!< in: delay in microseconds on 100 MHz Pentium */
@@ -499,7 +514,7 @@ ut_ulint_sort(
 	ulint*	aux_arr,	/*!< in/out: aux array to use in sort */
 	ulint	low,		/*!< in: lower bound */
 	ulint	high)		/*!< in: upper bound */
-	__attribute__((nonnull));
+	MY_ATTRIBUTE((nonnull));
 
 #ifndef UNIV_NONINL
 #include "ut0ut.ic"

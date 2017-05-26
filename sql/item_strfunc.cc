@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2000, 2013, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2013, Monty Program Ab.
+   Copyright (c) 2000, 2017, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2017, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -33,9 +33,6 @@
 
 #include <my_global.h>                          // HAVE_*
 
-/* May include caustic 3rd-party defs. Use early, so it can override nothing */
-#include "sha2.h"
-
 #include "sql_priv.h"
 /*
   It is necessary to include set_var.h instead of item.h because there
@@ -51,10 +48,7 @@
 #include "password.h"           // my_make_scrambled_password,
                                 // my_make_scrambled_password_323
 #include <m_ctype.h>
-#include <base64.h>
 #include <my_md5.h>
-#include "sha1.h"
-#include <zlib.h>
 C_MODE_START
 #include "../mysys/my_static.h"			// For soundex_map
 C_MODE_END
@@ -165,31 +159,6 @@ String *Item_func_md5::val_str_ascii(String *str)
 }
 
 
-/*
-  The MD5()/SHA() functions treat their parameter as being a case sensitive.
-  Thus we set binary collation on it so different instances of MD5() will be
-  compared properly.
-*/
-static CHARSET_INFO *get_checksum_charset(const char *csname)
-{
-  CHARSET_INFO *cs= get_charset_by_csname(csname, MY_CS_BINSORT, MYF(0));
-  if (!cs)
-  {
-    // Charset has no binary collation: use my_charset_bin.
-    cs= &my_charset_bin;
-  }
-  return cs;
-}
-
-
-void Item_func_md5::fix_length_and_dec()
-{
-  CHARSET_INFO *cs= get_checksum_charset(args[0]->collation.collation->csname);
-  args[0]->collation.set(cs, DERIVATION_COERCIBLE);
-  fix_length_and_charset(32, default_charset());
-}
-
-
 String *Item_func_sha::val_str_ascii(String *str)
 {
   DBUG_ASSERT(fixed == 1);
@@ -197,14 +166,14 @@ String *Item_func_sha::val_str_ascii(String *str)
   if (sptr)  /* If we got value different from NULL */
   {
     /* Temporary buffer to store 160bit digest */
-    uint8 digest[SHA1_HASH_SIZE];
-    compute_sha1_hash(digest, (const char *) sptr->ptr(), sptr->length());
+    uint8 digest[MY_SHA1_HASH_SIZE];
+    my_sha1(digest, (const char *) sptr->ptr(), sptr->length());
     /* Ensure that memory is free and we got result */
-    if (!str->alloc(SHA1_HASH_SIZE*2))
+    if (!str->alloc(MY_SHA1_HASH_SIZE*2))
     {
-      array_to_hex((char *) str->ptr(), digest, SHA1_HASH_SIZE);
+      array_to_hex((char *) str->ptr(), digest, MY_SHA1_HASH_SIZE);
       str->set_charset(&my_charset_numeric);
-      str->length((uint)  SHA1_HASH_SIZE*2);
+      str->length((uint)  MY_SHA1_HASH_SIZE*2);
       null_value=0;
       return str;
     }
@@ -215,21 +184,17 @@ String *Item_func_sha::val_str_ascii(String *str)
 
 void Item_func_sha::fix_length_and_dec()
 {
-  CHARSET_INFO *cs= get_checksum_charset(args[0]->collation.collation->csname);
-  args[0]->collation.set(cs, DERIVATION_COERCIBLE);
   // size of hex representation of hash
-  fix_length_and_charset(SHA1_HASH_SIZE * 2, default_charset());
+  fix_length_and_charset(MY_SHA1_HASH_SIZE * 2, default_charset());
 }
 
 String *Item_func_sha2::val_str_ascii(String *str)
 {
   DBUG_ASSERT(fixed == 1);
-#if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
-  unsigned char digest_buf[SHA512_DIGEST_LENGTH];
+  unsigned char digest_buf[512/8]; // enough for SHA512
   String *input_string;
-  unsigned char *input_ptr;
+  const char *input_ptr;
   size_t input_len;
-  uint digest_length= 0;
 
   str->set_charset(&my_charset_bin);
 
@@ -244,31 +209,26 @@ String *Item_func_sha2::val_str_ascii(String *str)
   if (null_value)
     return (String *) NULL;
 
-  input_ptr= (unsigned char *) input_string->ptr();
+  input_ptr= input_string->ptr();
   input_len= input_string->length();
 
-  switch ((uint) args[1]->val_int()) {
-#ifndef OPENSSL_NO_SHA512
+  longlong digest_length= args[1]->val_int();
+  switch (digest_length) {
   case 512:
-    digest_length= SHA512_DIGEST_LENGTH;
-    (void) SHA512(input_ptr, input_len, digest_buf);
+    my_sha512(digest_buf, input_ptr, input_len);
     break;
   case 384:
-    digest_length= SHA384_DIGEST_LENGTH;
-    (void) SHA384(input_ptr, input_len, digest_buf);
+    my_sha384(digest_buf, input_ptr, input_len);
     break;
-#endif
-#ifndef OPENSSL_NO_SHA256
   case 224:
-    digest_length= SHA224_DIGEST_LENGTH;
-    (void) SHA224(input_ptr, input_len, digest_buf);
+    my_sha224(digest_buf, input_ptr, input_len);
     break;
-  case 256:
   case 0: // SHA-256 is the default
-    digest_length= SHA256_DIGEST_LENGTH;
-    (void) SHA256(input_ptr, input_len, digest_buf);
+    digest_length= 256;
+    /* fall through */
+  case 256:
+    my_sha256(digest_buf, input_ptr, input_len);
     break;
-#endif
   default:
     if (!args[1]->const_item())
     {
@@ -282,6 +242,7 @@ String *Item_func_sha2::val_str_ascii(String *str)
     null_value= TRUE;
     return NULL;
   }
+  digest_length/= 8; /* bits to bytes */
 
   /* 
     Since we're subverting the usual String methods, we must make sure that
@@ -297,17 +258,6 @@ String *Item_func_sha2::val_str_ascii(String *str)
 
   null_value= FALSE;
   return str;
-
-#else
-  THD *thd= current_thd;
-  push_warning_printf(thd,
-                      Sql_condition::WARN_LEVEL_WARN,
-                      ER_FEATURE_DISABLED,
-                      ER_THD(thd, ER_FEATURE_DISABLED),
-                      "sha2", "--with-ssl");
-  null_value= TRUE;
-  return (String *) NULL;
-#endif /* defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY) */
 }
 
 
@@ -316,27 +266,18 @@ void Item_func_sha2::fix_length_and_dec()
   maybe_null= 1;
   max_length = 0;
 
-#if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
   int sha_variant= args[1]->const_item() ? args[1]->val_int() : 512;
 
   switch (sha_variant) {
-#ifndef OPENSSL_NO_SHA512
-  case 512:
-    fix_length_and_charset(SHA512_DIGEST_LENGTH * 2, default_charset());
-    break;
-  case 384:
-    fix_length_and_charset(SHA384_DIGEST_LENGTH * 2, default_charset());
-    break;
-#endif
-#ifndef OPENSSL_NO_SHA256
-  case 256:
   case 0: // SHA-256 is the default
-    fix_length_and_charset(SHA256_DIGEST_LENGTH * 2, default_charset());
-    break;
+    sha_variant= 256;
+    /* fall through */
+  case 512:
+  case 384:
+  case 256:
   case 224:
-    fix_length_and_charset(SHA224_DIGEST_LENGTH * 2, default_charset());
+    fix_length_and_charset(sha_variant/8 * 2, default_charset());
     break;
-#endif
   default:
     THD *thd= current_thd;
     push_warning_printf(thd,
@@ -345,18 +286,6 @@ void Item_func_sha2::fix_length_and_dec()
                         ER_THD(thd, ER_WRONG_PARAMETERS_TO_NATIVE_FCT),
                         "sha2");
   }
-
-  CHARSET_INFO *cs= get_checksum_charset(args[0]->collation.collation->csname);
-  args[0]->collation.set(cs, DERIVATION_COERCIBLE);
-
-#else
-  THD *thd= current_thd;
-  push_warning_printf(thd,
-                      Sql_condition::WARN_LEVEL_WARN,
-                      ER_FEATURE_DISABLED,
-                      ER_THD(thd, ER_FEATURE_DISABLED),
-                      "sha2", "--with-ssl");
-#endif /* defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY) */
 }
 
 /* Implementation of AES encryption routines */
@@ -428,14 +357,14 @@ void Item_func_to_base64::fix_length_and_dec()
 {
   maybe_null= args[0]->maybe_null;
   collation.set(default_charset(), DERIVATION_COERCIBLE, MY_REPERTOIRE_ASCII);
-  if (args[0]->max_length > (uint) base64_encode_max_arg_length())
+  if (args[0]->max_length > (uint) my_base64_encode_max_arg_length())
   {
     maybe_null= 1;
-    fix_char_length_ulonglong((ulonglong) base64_encode_max_arg_length());
+    fix_char_length_ulonglong((ulonglong) my_base64_encode_max_arg_length());
   }
   else
   {
-    int length= base64_needed_encoded_length((int) args[0]->max_length);
+    int length= my_base64_needed_encoded_length((int) args[0]->max_length);
     DBUG_ASSERT(length > 0);
     fix_char_length_ulonglong((ulonglong) length - 1);
   }
@@ -448,9 +377,9 @@ String *Item_func_to_base64::val_str_ascii(String *str)
   bool too_long= false;
   int length;
   if (!res ||
-      res->length() > (uint) base64_encode_max_arg_length() ||
+      res->length() > (uint) my_base64_encode_max_arg_length() ||
       (too_long=
-       ((uint) (length= base64_needed_encoded_length((int) res->length())) >
+       ((uint) (length= my_base64_needed_encoded_length((int) res->length())) >
         current_thd->variables.max_allowed_packet)) ||
       tmp_value.alloc((uint) length))
   {
@@ -466,7 +395,7 @@ String *Item_func_to_base64::val_str_ascii(String *str)
     }
     return 0;
   }
-  base64_encode(res->ptr(), (int) res->length(), (char*) tmp_value.ptr());
+  my_base64_encode(res->ptr(), (int) res->length(), (char*) tmp_value.ptr());
   DBUG_ASSERT(length > 0);
   tmp_value.length((uint) length - 1); // Without trailing '\0'
   null_value= 0;
@@ -476,13 +405,13 @@ String *Item_func_to_base64::val_str_ascii(String *str)
 
 void Item_func_from_base64::fix_length_and_dec()
 {
-  if (args[0]->max_length > (uint) base64_decode_max_arg_length())
+  if (args[0]->max_length > (uint) my_base64_decode_max_arg_length())
   {
-    fix_char_length_ulonglong((ulonglong) base64_decode_max_arg_length());
+    fix_char_length_ulonglong((ulonglong) my_base64_decode_max_arg_length());
   }
   else
   {
-    int length= base64_needed_decoded_length((int) args[0]->max_length);
+    int length= my_base64_needed_decoded_length((int) args[0]->max_length);
     fix_char_length_ulonglong((ulonglong) length);
   }
   maybe_null= 1; // Can be NULL, e.g. in case of badly formed input string
@@ -498,8 +427,8 @@ String *Item_func_from_base64::val_str(String *str)
   if (!res)
     goto err;
 
-  if (res->length() > (uint) base64_decode_max_arg_length() ||
-      ((uint) (length= base64_needed_decoded_length((int) res->length())) >
+  if (res->length() > (uint) my_base64_decode_max_arg_length() ||
+      ((uint) (length= my_base64_needed_decoded_length((int) res->length())) >
        current_thd->variables.max_allowed_packet))
   {
     THD *thd= current_thd;
@@ -514,7 +443,7 @@ String *Item_func_from_base64::val_str(String *str)
   if (tmp_value.alloc((uint) length))
     goto err;
 
-  if ((length= base64_decode(res->ptr(), (int) res->length(),
+  if ((length= my_base64_decode(res->ptr(), (int) res->length(),
                              (char *) tmp_value.ptr(), &end_ptr, 0)) < 0 ||
       end_ptr < res->ptr() + res->length())
   {
@@ -573,7 +502,7 @@ String *Item_func_decode_histogram::val_str(String *str)
   uint i;
   str->length(0);
   char numbuf[32];
-  const uchar *p= (uchar*)res->c_ptr();
+  const uchar *p= (uchar*)res->c_ptr_safe();
   for (i= 0; i < res->length(); i++)
   {
     double val;
@@ -814,9 +743,10 @@ String *Item_func_des_encrypt::val_str(String *str)
 
     /* We make good 24-byte (168 bit) key from given plaintext key with MD5 */
     bzero((char*) &ivec,sizeof(ivec));
-    EVP_BytesToKey(EVP_des_ede3_cbc(),EVP_md5(),NULL,
+    if (!EVP_BytesToKey(EVP_des_ede3_cbc(),EVP_md5(),NULL,
 		   (uchar*) keystr->ptr(), (int) keystr->length(),
-		   1, (uchar*) &keyblock,ivec);
+		   1, (uchar*) &keyblock,ivec))
+      goto error;
     DES_set_key_unchecked(&keyblock.key1,&keyschedule.ks1);
     DES_set_key_unchecked(&keyblock.key2,&keyschedule.ks2);
     DES_set_key_unchecked(&keyblock.key3,&keyschedule.ks3);
@@ -909,9 +839,10 @@ String *Item_func_des_decrypt::val_str(String *str)
       goto error;
 
     bzero((char*) &ivec,sizeof(ivec));
-    EVP_BytesToKey(EVP_des_ede3_cbc(),EVP_md5(),NULL,
+    if (!EVP_BytesToKey(EVP_des_ede3_cbc(),EVP_md5(),NULL,
 		   (uchar*) keystr->ptr(),(int) keystr->length(),
-		   1,(uchar*) &keyblock,ivec);
+		   1,(uchar*) &keyblock,ivec))
+      goto error;
     // Here we set all 64-bit keys (56 effective) one by one
     DES_set_key_unchecked(&keyblock.key1,&keyschedule.ks1);
     DES_set_key_unchecked(&keyblock.key2,&keyschedule.ks2);
@@ -1564,7 +1495,7 @@ String *Item_func_insert::val_str(String *str)
    length= res->charpos((int) length, (uint32) start);
 
   /* Re-testing with corrected params */
-  if (start > res->length())
+  if (start + 1 > res->length()) // remember, start = args[1].val_int() - 1
     return res; /* purecov: inspected */        // Wrong param; skip insert
   if (length > res->length() - start)
     length= res->length() - start;
@@ -2401,7 +2332,7 @@ bool Item_func_current_user::fix_fields(THD *thd, Item **ref)
   if (Item_func_sysconst::fix_fields(thd, ref))
     return TRUE;
 
-  Security_context *ctx= context->security_ctx
+  Security_context *ctx= context && context->security_ctx
                           ? context->security_ctx : thd->security_ctx;
   return init(ctx->priv_user, ctx->priv_host);
 }
@@ -2411,7 +2342,7 @@ bool Item_func_current_role::fix_fields(THD *thd, Item **ref)
   if (Item_func_sysconst::fix_fields(thd, ref))
     return 1;
 
-  Security_context *ctx= context->security_ctx
+  Security_context *ctx= context && context->security_ctx
                           ? context->security_ctx : thd->security_ctx;
 
   if (ctx->priv_role[0])
@@ -2420,13 +2351,13 @@ bool Item_func_current_role::fix_fields(THD *thd, Item **ref)
                        system_charset_info))
       return 1;
 
+    null_value= maybe_null= 0;
     str_value.mark_as_const();
     return 0;
   }
   null_value= maybe_null= 1;
   return 0;
 }
-
 
 void Item_func_soundex::fix_length_and_dec()
 {
@@ -2670,7 +2601,7 @@ String *Item_func_format::val_str_ascii(String *str)
       return 0; /* purecov: inspected */
     nr= my_double_round(nr, (longlong) dec, FALSE, FALSE);
     str->set_real(nr, dec, &my_charset_numeric);
-    if (isnan(nr) || my_isinf(nr))
+    if (!isfinite(nr))
       return str;
     str_length=str->length();
   }
@@ -3404,7 +3335,7 @@ String *Item_func_conv_charset::val_str(String *str)
   String *arg= args[0]->val_str(str);
   String_copier_for_item copier(current_thd);
   return ((null_value= args[0]->null_value ||
-                       copier.copy_with_warn(conv_charset, &tmp_value,
+                       copier.copy_with_warn(collation.collation, &tmp_value,
                                              arg->charset(), arg->ptr(),
                                              arg->length(), arg->length()))) ?
     0 : &tmp_value;
@@ -3412,7 +3343,7 @@ String *Item_func_conv_charset::val_str(String *str)
 
 void Item_func_conv_charset::fix_length_and_dec()
 {
-  collation.set(conv_charset, DERIVATION_IMPLICIT);
+  DBUG_ASSERT(collation.derivation == DERIVATION_IMPLICIT);
   fix_char_length(args[0]->max_char_length());
 }
 
@@ -3421,7 +3352,7 @@ void Item_func_conv_charset::print(String *str, enum_query_type query_type)
   str->append(STRING_WITH_LEN("convert("));
   args[0]->print(str, query_type);
   str->append(STRING_WITH_LEN(" using "));
-  str->append(conv_charset->csname);
+  str->append(collation.collation->csname);
   str->append(')');
 }
 
@@ -3486,13 +3417,11 @@ bool Item_func_set_collation::eq(const Item *item, bool binary_cmp) const
 
 void Item_func_set_collation::print(String *str, enum_query_type query_type)
 {
-  str->append('(');
-  args[0]->print(str, query_type);
+  args[0]->print_parenthesised(str, query_type, precedence());
   str->append(STRING_WITH_LEN(" collate "));
   DBUG_ASSERT(args[1]->basic_const_item() &&
               args[1]->type() == Item::STRING_ITEM);
   ((Item_string *)args[1])->print_value(str);
-  str->append(')');
 }
 
 String *Item_func_charset::val_str(String *str)
@@ -3534,7 +3463,7 @@ void Item_func_weight_string::fix_length_and_dec()
   {
     uint char_length;
     char_length= ((cs->state & MY_CS_STRNXFRM_BAD_NWEIGHTS) || !nweights) ?
-                 args[0]->max_char_length() : nweights;
+                 args[0]->max_char_length() : nweights * cs->levels_for_order;
     max_length= cs->coll->strnxfrmlen(cs, char_length * cs->mbmaxlen);
   }
   maybe_null= 1;
@@ -3617,6 +3546,21 @@ String *Item_func_weight_string::val_str(String *str)
 nl:
   null_value= 1;
   return 0;
+}
+
+
+void Item_func_weight_string::print(String *str, enum_query_type query_type)
+{
+  str->append(func_name());
+  str->append('(');
+  args[0]->print(str, query_type);
+  str->append(',');
+  str->append_ulonglong(result_length);
+  str->append(',');
+  str->append_ulonglong(nweights);
+  str->append(',');
+  str->append_ulonglong(flags);
+  str->append(')');
 }
 
 
@@ -3954,6 +3898,7 @@ String *Item_func_quote::val_str(String *str)
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   };
 
+  ulong max_allowed_packet= current_thd->variables.max_allowed_packet;
   char *from, *to, *end, *start;
   String *arg= args[0]->val_str(str);
   uint arg_length, new_length;
@@ -3972,11 +3917,14 @@ String *Item_func_quote::val_str(String *str)
     new_length= arg_length + 2; /* for beginning and ending ' signs */
     for (from= (char*) arg->ptr(), end= from + arg_length; from < end; from++)
       new_length+= get_esc_bit(escmask, (uchar) *from);
+    if (new_length > max_allowed_packet)
+      goto toolong;
   }
   else
   {
     new_length= (arg_length * 2) +  /* For string characters */
                 (2 * collation.collation->mbmaxlen); /* For quotes */
+    set_if_smaller(new_length, max_allowed_packet);
   }
 
   if (tmp_value.alloc(new_length))
@@ -3992,7 +3940,7 @@ String *Item_func_quote::val_str(String *str)
 
     /* Put leading quote */
     if ((mblen= cs->cset->wc_mb(cs, '\'', (uchar *) to, to_end)) <= 0)
-      goto null;
+      goto toolong;
     to+= mblen;
 
     for (start= (char*) arg->ptr(), end= start + arg_length; start < end; )
@@ -4012,17 +3960,17 @@ String *Item_func_quote::val_str(String *str)
       if (escape)
       {
         if ((mblen= cs->cset->wc_mb(cs, '\\', (uchar*) to, to_end)) <= 0)
-          goto null;
+          goto toolong;
         to+= mblen;
       }
       if ((mblen= cs->cset->wc_mb(cs, wc, (uchar*) to, to_end)) <= 0)
-        goto null;
+        goto toolong;
       to+= mblen;
     }
 
     /* Put trailing quote */
     if ((mblen= cs->cset->wc_mb(cs, '\'', (uchar *) to, to_end)) <= 0)
-      goto null;
+      goto toolong;
     to+= mblen;
     new_length= to - tmp_value.ptr();
     goto ret;
@@ -4066,6 +4014,11 @@ ret:
   null_value= 0;
   return &tmp_value;
 
+toolong:
+  push_warning_printf(current_thd, Sql_condition::WARN_LEVEL_WARN,
+                      ER_WARN_ALLOWED_PACKET_OVERFLOWED,
+                      ER_THD(current_thd, ER_WARN_ALLOWED_PACKET_OVERFLOWED),
+                      func_name(), max_allowed_packet);
 null:
   null_value= 1;
   return 0;
@@ -4118,7 +4071,7 @@ longlong Item_func_crc32::val_int()
     return 0; /* purecov: inspected */
   }
   null_value=0;
-  return (longlong) crc32(0L, (uchar*)res->ptr(), res->length());
+  return (longlong) my_checksum(0L, (uchar*)res->ptr(), res->length());
 }
 
 #ifdef HAVE_COMPRESS
@@ -4727,7 +4680,7 @@ void Item_func_dyncol_add::print(String *str,
                                  enum_query_type query_type)
 {
   DBUG_ASSERT((arg_count & 0x1) == 1); // odd number of arguments
-  str->append(STRING_WITH_LEN("column_create("));
+  str->append(STRING_WITH_LEN("column_add("));
   args[arg_count - 1]->print(str, query_type);
   str->append(',');
   print_arguments(str, query_type);
@@ -4924,23 +4877,8 @@ longlong Item_dyncol_get::val_int()
     unsigned_flag= 0;            // Make it possible for caller to detect sign
     return val.x.long_value;
   case DYN_COL_DOUBLE:
-  {
-    bool error;
-    longlong num;
-
-    num= double_to_longlong(val.x.double_value, unsigned_flag, &error);
-    if (error)
-    {
-      char buff[30];
-      sprintf(buff, "%lg", val.x.double_value);
-      push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
-                          ER_DATA_OVERFLOW,
-                          ER_THD(thd, ER_DATA_OVERFLOW),
-                          buff,
-                          unsigned_flag ? "UNSIGNED INT" : "INT");
-    }
-    return num;
-  }
+    return Converter_double_to_longlong_with_warn(thd, val.x.double_value,
+                                                  unsigned_flag).result();
   case DYN_COL_STRING:
   {
     int error;
@@ -5118,20 +5056,21 @@ bool Item_dyncol_get::get_date(MYSQL_TIME *ltime, ulonglong fuzzy_date)
     goto null;
   case DYN_COL_INT:
     signed_value= 1;                                  // For error message
-    /* fall_trough */
+    /* fall through */
   case DYN_COL_UINT:
     if (signed_value || val.x.ulong_value <= LONGLONG_MAX)
     {
-      bool neg= val.x.ulong_value > LONGLONG_MAX;
-      if (int_to_datetime_with_warn(neg, neg ? -val.x.ulong_value :
-                                                val.x.ulong_value,
+      longlong llval = (longlong)val.x.ulong_value;
+      bool neg = llval < 0;
+      if (int_to_datetime_with_warn(neg, (ulonglong)(neg ? -llval :
+                                                llval),
                                     ltime, fuzzy_date, 0 /* TODO */))
         goto null;
       return 0;
     }
     /* let double_to_datetime_with_warn() issue the warning message */
     val.x.double_value= static_cast<double>(ULONGLONG_MAX);
-    /* fall_trough */
+    /* fall through */
   case DYN_COL_DOUBLE:
     if (double_to_datetime_with_warn(val.x.double_value, ltime, fuzzy_date,
                                      0 /* TODO */))
@@ -5233,4 +5172,3 @@ null:
     my_free(names);
   return NULL;
 }
-

@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 
 #include <my_global.h> 
@@ -1278,7 +1278,7 @@ inline int Gcalc_operation_reducer::get_single_result(res_point *res,
       GCALC_DBUG_RETURN(1);
   }
   else
-    if (storage->single_point(res->pi->x, res->pi->y))
+    if (storage->single_point(res->pi->node.shape.x, res->pi->node.shape.y))
       GCALC_DBUG_RETURN(1);
   free_result(res);
   GCALC_DBUG_RETURN(0);
@@ -1304,8 +1304,8 @@ int Gcalc_operation_reducer::get_result_thread(res_point *cur,
       }
       else
       {
-	x= cur->pi->x;
-        y= cur->pi->y;
+	x= cur->pi->node.shape.x;
+        y= cur->pi->node.shape.y;
       }
       if (storage->add_point(x, y))
         GCALC_DBUG_RETURN(1);

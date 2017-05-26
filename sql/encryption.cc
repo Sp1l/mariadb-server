@@ -23,9 +23,15 @@
 static plugin_ref encryption_manager= 0;
 struct encryption_service_st encryption_handler;
 
+extern "C" {
+
 uint no_key(uint)
 {
   return ENCRYPTION_KEY_VERSION_INVALID;
+}
+uint zero_size(uint,uint)
+{
+  return 0;
 }
 
 static int ctx_init(void *ctx, const unsigned char* key, unsigned int klen,
@@ -40,6 +46,8 @@ static unsigned int get_length(unsigned int slen, unsigned int key_id,
 {
   return my_aes_get_size(MY_AES_CBC, slen);
 }
+
+} /* extern "C" */
 
 int initialize_encryption_plugin(st_plugin_int *plugin)
 {
@@ -57,9 +65,15 @@ int initialize_encryption_plugin(st_plugin_int *plugin)
   st_mariadb_encryption *handle=
     (struct st_mariadb_encryption*) plugin->plugin->info;
 
-  encryption_handler.encryption_ctx_size_func=
-    handle->crypt_ctx_size ? handle->crypt_ctx_size :
-    (uint (*)(unsigned int, unsigned int))my_aes_ctx_size;
+  /*
+    Copmiler on Spark doesn't like the '?' operator here as it
+    belives the (uint (*)...) implies the C++ call model.
+  */
+  if (handle->crypt_ctx_size)
+    encryption_handler.encryption_ctx_size_func= handle->crypt_ctx_size;
+  else
+    encryption_handler.encryption_ctx_size_func=
+      (uint (*)(unsigned int, unsigned int))my_aes_ctx_size;
 
   encryption_handler.encryption_ctx_init_func=
     handle->crypt_ctx_init ? handle->crypt_ctx_init : ctx_init;
@@ -87,6 +101,7 @@ int finalize_encryption_plugin(st_plugin_int *plugin)
   encryption_handler.encryption_key_get_func=
       (uint (*)(uint, uint, uchar*, uint*))no_key;
   encryption_handler.encryption_key_get_latest_version_func= no_key;
+  encryption_handler.encryption_ctx_size_func= zero_size;
 
   if (plugin && plugin->plugin->deinit && plugin->plugin->deinit(NULL))
   {

@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111-1301 USA */
 
 #include "feedback.h"
 
@@ -375,7 +375,6 @@ static MYSQL_SYSVAR_ULONG(send_retry_wait, send_retry_wait, PLUGIN_VAR_RQCMDARG,
 static MYSQL_SYSVAR_STR(http_proxy, http_proxy,
                         PLUGIN_VAR_READONLY | PLUGIN_VAR_RQCMDARG,
        "Proxy server host:port.", NULL, NULL,0);
-
 
 #ifndef DBUG_OFF
 static MYSQL_SYSVAR_ULONG(debug_startup_interval, debug_startup_interval,

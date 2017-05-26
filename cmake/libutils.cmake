@@ -58,13 +58,13 @@ IF(WIN32 OR CYGWIN OR APPLE OR WITH_PIC OR DISABLE_SHARED OR NOT CMAKE_SHARED_LI
 ENDIF()
 
 INCLUDE(CMakeParseArguments)
-# CREATE_EXPORT_FILE (VAR target api_functions)
+# CREATE_EXPORTS_FILE (VAR target api_functions)
 # Internal macro, used to create source file for shared libraries that 
 # otherwise consists entirely of "convenience" libraries. On Windows, 
 # also exports API functions as dllexport. On unix, creates a dummy file 
 # that references all exports and this prevents linker from creating an 
 # empty library(there are unportable alternatives, --whole-archive)
-MACRO(CREATE_EXPORT_FILE VAR TARGET API_FUNCTIONS)
+MACRO(CREATE_EXPORTS_FILE VAR TARGET API_FUNCTIONS)
   IF(WIN32)
     SET(DUMMY ${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_dummy.c)
     SET(EXPORTS ${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_exports.def)
@@ -87,6 +87,11 @@ MACRO(CREATE_EXPORT_FILE VAR TARGET API_FUNCTIONS)
     ENDFOREACH()
     SET(CONTENT "${CONTENT} (void *)0\n}\;")
     CONFIGURE_FILE_CONTENT(${CONTENT} ${EXPORTS})
+    # Avoid "function redeclared as variable" error
+    # when using gcc/clang option -flto(link time optimization)
+    IF(" ${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS} " MATCHES " -flto")
+      SET_SOURCE_FILES_PROPERTIES(${EXPORTS} PROPERTIES COMPILE_FLAGS "-fno-lto")
+    ENDIF()
     SET(${VAR} ${EXPORTS})
   ENDIF()
 ENDMACRO()
@@ -183,7 +188,7 @@ MACRO(MERGE_STATIC_LIBS TARGET OUTPUT_NAME LIBS_TO_MERGE)
       # binaries properly)
       ADD_CUSTOM_COMMAND(TARGET ${TARGET} POST_BUILD
         COMMAND rm ${TARGET_LOCATION}
-        COMMAND /usr/bin/libtool -static -o ${TARGET_LOCATION} 
+        COMMAND libtool -static -o ${TARGET_LOCATION} 
         ${STATIC_LIBS}
       )  
     ELSE()
@@ -250,7 +255,7 @@ MACRO(MERGE_LIBRARIES)
         ENDIF()
       ENDFOREACH()
     ENDIF()
-    CREATE_EXPORT_FILE(SRC ${TARGET} "${ARG_EXPORTS}")
+    CREATE_EXPORTS_FILE(SRC ${TARGET} "${ARG_EXPORTS}")
     IF(NOT ARG_NOINSTALL)
       ADD_VERSION_INFO(${TARGET} SHARED SRC)
     ENDIF()
